@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI 深度论文生成助手 (层级修正版)</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <style>
+        body { background-color: #f4f6f9; font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; }
+        .sidebar { background: white; padding: 25px; border-right: 1px solid #e0e0e0; height: 100vh; overflow-y: auto; display: flex; flex-direction: column; }
+        .output-area { background: white; padding: 40px; min-height: 100vh; overflow-y: auto; position: relative;}
+        #logArea { font-size: 0.8rem; background: #212529; color: #00ff9d; padding: 15px; border-radius: 6px; font-family: monospace; height: 150px; overflow-y: auto; margin-top: auto; border: 1px solid #444;}
+        
+        .chapter-config-item { 
+            background: #f8f9fa; border: 1px solid #dee2e6; padding: 10px; margin-bottom: 8px; border-radius: 6px; 
+            display: flex; justify-content: space-between; align-items: center;
+        }
+        .chapter-config-item .label { font-weight: 600; font-size: 0.9rem; color: #495057; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 180px;}
+        
+        textarea { font-size: 0.85rem !important; resize: vertical; }
+        /* 针对不同层级标题的渲染优化 */
+        .markdown-body h2 { border-left: 5px solid #0d6efd; padding-left: 10px; margin-top: 40px; color: #2c3e50; font-size: 1.6rem;}
+        .markdown-body p { text-align: justify; line-height: 1.8; margin-bottom: 1.2rem; color: #333; }
+        .step-badge { background: #0d6efd; color: white; padding: 2px 8px; border-radius: 4px; font-size: 0.75rem; margin-right: 5px; }
+
+        .control-bar {
+            position: sticky; top: 0; background: rgba(255,255,255,0.95); z-index: 100;
+            padding: 10px 0; border-bottom: 1px solid #eee; display: flex; justify-content: space-between; align-items: center;
+            backdrop-filter: blur(5px);
+        }
+    </style>
+</head>
+<body>
+
+<div class="container-fluid g-0">
+    <div class="row g-0">
+        <div class="col-md-4">
+            <div class="sidebar">
+                <h5 class="mb-4 fw-bold text-primary"><i class="bi bi-gear-fill"></i> 论文配置工作台</h5>
+                <form id="paperForm">
+                    <div class="mb-3">
+                        <label class="form-label fw-bold"><span class="step-badge">1</span>论文题目</label>
+                        <input type="text" class="form-control" id="paperTitle" placeholder="输入论文题目" required>
+                    </div>
+
+                    <div class="mb-3">
+                        <label class="form-label fw-bold d-flex justify-content-between">
+                            <span><span class="step-badge">2</span>完整大纲 (自动识别层级)</span>
+                            <a href="#" class="text-decoration-none small" onclick="loadDemoOutline()">填入示例</a>
+                        </label>
+                        <textarea class="form-control" id="outlineRaw" rows="10" placeholder="摘要&#10;1. 绪论&#10;1.1 研究背景&#10;1.4 研究内容与方法&#10;1.4.1 研究内容&#10;1.4.2 研究方法" required oninput="parseOutline()"></textarea>
+                        <div class="form-text text-muted small">系统会自动识别 "1.4" 为父标题(不写内容)，"1.4.1" 为子内容。</div>
+                    </div>
+
+                    <div class="mb-3">
+                        <label class="form-label fw-bold"><span class="step-badge">3</span>写作字数分配</label>
+                        <div id="chapterConfigArea" style="max-height: 250px; overflow-y: auto;">
+                            <div class="text-center text-muted small py-3">请输入大纲...</div>
+                        </div>
+                        <div class="text-end mt-1">
+                            <small class="fw-bold text-primary">总计预估: <span id="totalWords">0</span> 字</small>
+                        </div>
+                    </div>
+
+                    <div class="mb-3">
+                        <label class="form-label fw-bold"><span class="step-badge">4</span>参考文献</label>
+                        <textarea class="form-control" id="references" rows="5" placeholder="请粘贴参考文献..."></textarea>
+                    </div>
+
+                    <button type="submit" id="btnSubmit" class="btn btn-primary w-100 fw-bold py-2">🚀 开始生成</button>
+                </form>
+                <div id="logArea" class="mt-3">等待就绪...</div>
+            </div>
+        </div>
+
+        <div class="col-md-8">
+            <div class="output-area">
+                <div class="control-bar mb-4">
+                    <h4 class="m-0 text-dark">📄 生成结果预览</h4>
+                    <div id="controlButtons" style="display: none;">
+                        <button class="btn btn-warning btn-sm me-2" id="btnPause" onclick="togglePause()">⏸ 暂停</button>
+                        <button class="btn btn-danger btn-sm me-2" onclick="stopTask()">⏹ 停止</button>
+                        <button class="btn btn-success btn-sm" onclick="exportToMarkdown()">📥 导出 MD</button>
+                    </div>
+                </div>
+                <div id="resultContent" class="markdown-body">
+                    <div class="text-center text-muted mt-5 pt-5">
+                        <p style="font-size: 1.2rem;">💡 智能识别大纲层级，父级标题将只作为结构展示</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    let parsedStructure = []; // 存储结构化大纲
+    let fullMarkdownText = "";
+    let currentTaskId = "";
+    let isPaused = false;
+
+    function generateUUID() {
+        return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => (c === 'x' ? Math.random() * 16 | 0 : (Math.random() * 16 | 0) & 0x3 | 0x8).toString(16));
+    }
+
+    function loadDemoOutline() {
+        document.getElementById('outlineRaw').value = `摘要
+1. 绪论
+1.1 研究背景
+1.2 研究意义
+1.4 研究内容与方法
+1.4.1 研究内容
+1.4.2 研究方法
+2. 理论基础
+2.1 核心概念
+2.2 理论框架
+3. 结论`;
+        parseOutline();
+    }
+
+    // --- 核心：层级解析算法 ---
+    function parseOutline() {
+        const text = document.getElementById('outlineRaw').value;
+        // 1. 初步清洗，去除空行
+        let rawLines = text.split('\n').map(l => l.trim()).filter(l => l);
+        
+        // 2. 摘要去重：如果有了“摘要”，就过滤掉“Abstract”
+        const hasChineseAbstract = rawLines.some(l => l.includes("摘要"));
+        if (hasChineseAbstract) {
+            rawLines = rawLines.filter(l => !l.toLowerCase().includes("abstract") && !l.includes("Abstract"));
+        }
+
+        // 3. 构建树形结构逻辑预判
+        // 我们需要识别每一行是否是“父节点”
+        // 规则：如果 Line A 的序号（如 1.4）是 Line B 序号（如 1.4.1）的前缀，则 A 是父节点
+        
+        parsedStructure = [];
+        let currentMainGroup = null; // 用于UI显示的组（大章）
+
+        // 正则提取序号：匹配 "1.", "1.4", "1.4.1" 等
+        const numRegex = /^(\d+(\.\d+)*)/; 
+
+        for (let i = 0; i < rawLines.length; i++) {
+            const line = rawLines[i];
+            
+            // 提取当前行序号
+            const matchCurrent = line.match(numRegex);
+            const numCurrent = matchCurrent ? matchCurrent[1] : null;
+            
+            let isParent = false;
+            
+            // 向后看一行，判断是否为父节点
+            if (i < rawLines.length - 1 && numCurrent) {
+                const nextLine = rawLines[i+1];
+                const matchNext = nextLine.match(numRegex);
+                const numNext = matchNext ? matchNext[1] : null;
+                
+                // 如果下一行的序号 以 当前行序号+. 开头 (例如 1.4.1 startsWith 1.4.)
+                if (numNext && numNext.startsWith(numCurrent + '.')) {
+                    isParent = true;
+                }
+            }
+
+            // 判断是否是顶级章节（用于UI分组显示字数控制）
+            // 简单逻辑：如果是 "1." 或 "摘要" 或 "结论"，视为一个UI配置组的开始
+            const isMainChapter = /^(\d+)(\.|、|\s)(?!\d)/.test(line) || ["摘要", "结论", "绪论"].some(k => line.includes(k)) && !line.includes(".");
+
+            if (isMainChapter) {
+                currentMainGroup = { 
+                    title: line, 
+                    children: [], // 包含自己和所有子节点
+                    defaultWords: 1000 
+                };
+                parsedStructure.push(currentMainGroup);
+            } else {
+                if (!currentMainGroup) {
+                    currentMainGroup = { title: "前言/其他", children: [], defaultWords: 500 };
+                    parsedStructure.push(currentMainGroup);
+                }
+            }
+            
+            // 将行信息加入当前组，并标记是否为 Parent
+            currentMainGroup.children.push({
+                text: line,
+                isParent: isParent
+            });
+        }
+        
+        renderConfigArea();
+    }
+
+    function renderConfigArea() {
+        const container = document.getElementById('chapterConfigArea');
+        container.innerHTML = '';
+        let totalWords = 0;
+
+        parsedStructure.forEach((group, index) => {
+            // 计算这个大组里有多少个“叶子节点”（即实际需要写字的章节）
+            const leafCount = group.children.filter(c => !c.isParent).length;
+            
+            // 智能预设字数
+            let w = 1000;
+            if (group.title.includes("摘要")) w = 350;
+            else if (group.title.includes("绪论")) w = 1500;
+            else if (leafCount > 3) w = leafCount * 400; // 如果子项多，字数增加
+            
+            totalWords += w;
+
+            const div = document.createElement('div');
+            div.className = 'chapter-config-item';
+            div.innerHTML = `
+                <div>
+                    <div class="label" title="${group.title}">${group.title}</div>
+                    <div class="sub-count">
+                        ${group.children.length} 个标题 
+                        <span class="badge bg-secondary" style="font-size:0.6rem">${leafCount} 个写作点</span>
+                    </div>
+                </div>
+                <div class="d-flex align-items-center">
+                    <input type="number" class="form-control form-control-sm word-input" 
+                           data-idx="${index}" value="${w}" step="50" min="0" onchange="recalcTotal()">
+                    <span class="ms-1 small text-muted">字</span>
+                </div>
+            `;
+            container.appendChild(div);
+        });
+        document.getElementById('totalWords').innerText = totalWords;
+    }
+
+    function recalcTotal() {
+        let total = 0;
+        document.querySelectorAll('.word-input').forEach(i => total += parseInt(i.value)||0);
+        document.getElementById('totalWords').innerText = total;
+    }
+
+    // --- 提交逻辑：构建任务列表 ---
+    document.getElementById('paperForm').onsubmit = async (e) => {
+        e.preventDefault();
+        currentTaskId = generateUUID();
+        isPaused = false;
+        
+        const inputs = document.querySelectorAll('.word-input');
+        const flatTasks = [];
+
+        // 遍历UI上的大组
+        parsedStructure.forEach((group, index) => {
+            const totalAssigned = parseInt(inputs[index].value) || 0;
+            const leafNodes = group.children.filter(c => !c.isParent);
+            const leafCount = leafNodes.length;
+            
+            // 平均分配字数给叶子节点
+            const perWord = leafCount > 0 ? Math.floor(totalAssigned / leafCount) : 0;
+
+            // 遍历该组的所有行（包括父节点）
+            group.children.forEach(child => {
+                flatTasks.push({
+                    title: child.text,
+                    is_parent: child.isParent, // 告诉后端这是父节点
+                    words: child.isParent ? 0 : Math.max(200, perWord) // 父节点0字，叶子节点分配字数
+                });
+            });
+        });
+
+        // UI 状态更新
+        const btn = document.getElementById('btnSubmit');
+        const logArea = document.getElementById('logArea');
+        const resultDiv = document.getElementById('resultContent');
+        const ctrlDiv = document.getElementById('controlButtons');
+        
+        btn.disabled = true;
+        ctrlDiv.style.display = 'block';
+        document.getElementById('btnPause').innerText = "⏸ 暂停";
+        resultDiv.innerHTML = "";
+        fullMarkdownText = "";
+        
+        const formData = new FormData();
+        formData.append('title', document.getElementById('paperTitle').value);
+        formData.append('references', document.getElementById('references').value);
+        formData.append('chapter_data', JSON.stringify(flatTasks)); // 发送包含 is_parent 标记的任务
+        formData.append('task_id', currentTaskId);
+
+        try {
+            const response = await fetch('/generate', { method: 'POST', body: formData });
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                const chunk = decoder.decode(value);
+                const lines = chunk.split('\n\n');
+                for (const line of lines) {
+                    if (line.startsWith('data: ')) {
+                        try {
+                            const data = JSON.parse(line.replace('data: ', ''));
+                            if (data.type === 'log') logArea.innerHTML += `<div>> ${data.msg}</div>`;
+                            else if (data.type === 'content') {
+                                fullMarkdownText += data.md;
+                                resultDiv.innerHTML = marked.parse(fullMarkdownText);
+                            }
+                            else if (data.type === 'done') {
+                                btn.disabled = false;
+                                ctrlDiv.style.display = 'none';
+                            }
+                            logArea.scrollTop = logArea.scrollHeight;
+                        } catch (e) {}
+                    }
+                }
+            }
+        } catch (err) {
+            alert("Error: " + err);
+            btn.disabled = false;
+        }
+    };
+
+    // 暂停/停止/导出 函数保持不变 (复用之前的代码)
+    async function togglePause() { /* 同上个版本 */
+        const btn = document.getElementById('btnPause');
+        const action = isPaused ? 'resume' : 'pause';
+        await fetch('/control', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ task_id: currentTaskId, action: action })});
+        isPaused = !isPaused;
+        btn.innerText = isPaused ? "▶ 继续" : "⏸ 暂停";
+        btn.className = isPaused ? "btn btn-info btn-sm me-2" : "btn btn-warning btn-sm me-2";
+    }
+    async function stopTask() { /* 同上个版本 */ 
+        if(!confirm("确定停止？")) return;
+        await fetch('/control', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ task_id: currentTaskId, action: 'stop' })});
+        document.getElementById('btnSubmit').disabled = false;
+        document.getElementById('controlButtons').style.display = 'none';
+    }
+    function exportToMarkdown() {
+        if(!fullMarkdownText) return;
+        const blob = new Blob([fullMarkdownText], { type: 'text/markdown' });
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = 'thesis_result.md';
+        a.click();
+    }
+</script>
+</body>
+</html>

@@ -1,8 +1,8 @@
 import time
 import json
 import re
-import uuid
-from typing import List, Dict, Generator
+import math
+from typing import List, Dict, Generator, Tuple
 from flask import Flask, render_template, request, Response, stream_with_context, jsonify
 from openai import OpenAI
 
@@ -18,140 +18,214 @@ MODEL_NAME = "deepseek-v3.1"
 TASK_STATES = {}
 
 # ==============================================================================
-# 1. 引用管理器 (静态锚定 + 原样输出)
+# 1. 引用管理器 (智能分发版)
 # ==============================================================================
 class ReferenceManager:
     def __init__(self, raw_references: str):
-        # 1. 按行分割，去除空行
-        lines = [r.strip() for r in raw_references.split('\n') if r.strip()]
+        # 1. 清洗输入，去除原有的序号 (1. [1] (1) 等)
+        raw_lines = [r.strip() for r in raw_references.split('\n') if r.strip()]
         self.all_refs = []
         
-        # 2. 清洗用户输入的序号 (防止 "[1] 张三" 变成 "[1] [1] 张三")
+        # 匹配开头的序号并去除
         clean_pattern = re.compile(r'^(\[\d+\]|\d+\.|（\d+）|\(\d+\))\s*')
         
-        for line in lines:
-            cleaned_line = clean_pattern.sub('', line) 
+        for line in raw_lines:
+            cleaned_line = clean_pattern.sub('', line)
             self.all_refs.append(cleaned_line)
 
-    def get_prompt_context(self) -> str:
-        """生成给 AI 看的列表，带ID索引"""
-        if not self.all_refs: return ""
-        context = ""
+    def is_chinese(self, text: str) -> bool:
+        """检测文本是否包含中文字符"""
+        return bool(re.search(r'[\u4e00-\u9fa5]', text))
+
+    def distribute_references_smart(self, chapters: List[Dict]) -> Dict[int, str]:
+        """
+        智能分配参考文献：
+        逻辑：
+        1. 将所有文献分为 [CN_List] 和 [EN_List]。
+        2. 扫描章节，找到 [Domestic_Idxs] (国内), [Foreign_Idxs] (国外), [General_Idxs] (通用)。
+        3. 将 CN_List 分给 Domestic，EN_List 分给 Foreign。
+        4. 剩余的（或无法匹配的）分给 General。
+        5. 保证所有文献都被分配出去。
+        """
+        if not self.all_refs: return {}
+
+        # 1. 文献分类 (保存 (GlobalIndex, Content))
+        cn_refs = [] 
+        en_refs = []
         for i, ref in enumerate(self.all_refs):
-            # 截取前80个字给AI识别，保留足够信息
-            snippet = ref[:80] + "..." if len(ref) > 80 else ref
-            context += f"ID_{i}: {snippet}\n"
-        return context
+            if self.is_chinese(ref):
+                cn_refs.append((i, ref))
+            else:
+                en_refs.append((i, ref))
+
+        # 2. 章节分类
+        domestic_idxs = []
+        foreign_idxs = []
+        general_idxs = []
+
+        for i, chapter in enumerate(chapters):
+            if chapter.get('is_parent'): continue
+            title = chapter['title']
+            
+            # 只有综述类章节才参与分配
+            if any(k in title for k in ["现状", "综述", "Review", "Status", "背景"]):
+                if "国内" in title or "我国" in title or "China" in title:
+                    domestic_idxs.append(i)
+                elif "国外" in title or "国际" in title or "Foreign" in title:
+                    foreign_idxs.append(i)
+                else:
+                    general_idxs.append(i)
+
+        # 3. 分配算法
+        allocation = {} # {chapter_idx: [ (id, content), ... ]}
+
+        def assign_chunks(refs_list, target_idxs):
+            """将 ref 列表平均切分给 target_idxs"""
+            if not target_idxs: return refs_list # 返回未分配的
+            if not refs_list: return []
+            
+            chunk_size = math.ceil(len(refs_list) / len(target_idxs))
+            for k, idx in enumerate(target_idxs):
+                start = k * chunk_size
+                end = start + chunk_size
+                chunk = refs_list[start:end]
+                if not chunk: continue
+                
+                if idx not in allocation: allocation[idx] = []
+                allocation[idx].extend(chunk)
+            return [] # 全部分配完毕
+
+        # (A) 中文 -> 国内章节
+        rem_cn = assign_chunks(cn_refs, domestic_idxs)
+        # (B) 英文 -> 国外章节
+        rem_en = assign_chunks(en_refs, foreign_idxs)
+        
+        # (C) 剩余的所有 -> 通用章节
+        rem_all = rem_cn + rem_en
+        # 按原始序号排序，保持美观
+        rem_all.sort(key=lambda x: x[0])
+        rem_final = assign_chunks(rem_all, general_idxs)
+
+        # (D) 极端兜底：如果还有剩余（说明连通用章节都没有），强行塞给最后一个可用的综述章节
+        if rem_final:
+            # 找一个“垃圾桶”章节
+            target = None
+            if general_idxs: target = general_idxs[-1]
+            elif domestic_idxs: target = domestic_idxs[-1]
+            elif foreign_idxs: target = foreign_idxs[-1]
+            
+            if target is not None:
+                if target not in allocation: allocation[target] = []
+                allocation[target].extend(rem_final)
+
+        # 4. 生成最终 Prompt Context
+        result_map = {}
+        for idx, ref_list in allocation.items():
+            # 再次排序，确保同一章节内的引用顺序是 [1], [2] 而不是 [2], [1]
+            ref_list.sort(key=lambda x: x[0])
+            
+            context = ""
+            for global_idx, content in ref_list:
+                snippet = content[:100] + "..." if len(content) > 100 else content
+                # 关键：使用 GlobalIndex (ID_0, ID_1) 确保全局唯一
+                context += f"ID_{global_idx}: {snippet}\n"
+            result_map[idx] = context
+            
+        return result_map
 
     def process_text(self, text: str) -> str:
-        """将 [REF:ID_x] 替换为 [x+1]"""
+        """
+        将 [REF:ID_x] 替换为 [x+1]
+        """
         pattern = re.compile(r'\[REF:ID_(\d+)\]')
-        
         def replace_func(match):
             try:
                 ref_id = int(match.group(1))
-                if ref_id < 0 or ref_id >= len(self.all_refs): return "" 
-                return f"[{ref_id + 1}]" # 静态映射：ID_0 -> [1]
+                if ref_id < 0 or ref_id >= len(self.all_refs): return ""
+                return f"[{ref_id + 1}]" # ID_0 -> [1]
             except:
                 return ""
         return pattern.sub(replace_func, text)
 
     def generate_bibliography(self) -> str:
-        """生成最终列表：严格按用户输入顺序"""
+        """生成最终参考文献列表"""
         if not self.all_refs: return ""
         res = "## 参考文献\n\n"
         for i, ref_content in enumerate(self.all_refs):
+            # 严格按照用户输入的顺序输出
             res += f"[{i+1}] {ref_content}\n\n"
         return res
 
 # ==============================================================================
-# 2. 终极提示词生成函数 (融合版)
+# 2. 提示词生成函数 (包含格式控制)
 # ==============================================================================
 def get_academic_thesis_prompt(target_words: int, ref_context: str, current_chapter_title: str) -> str:
     
-    # --- 1. 引用逻辑判断 ---
-    is_review_section = any(k in current_chapter_title for k in ["现状", "综述", "Review", "Status", "背景"])
-    
+    # --- 引用逻辑 ---
     ref_instruction = ""
-    if is_review_section and ref_context:
+    if ref_context:
         ref_instruction = f"""
-### **策略C: 严格引用协议 (Reference Protocol)**
-本章节属于综述性质，**必须**引用参考文献。
-**操作规则**:
-1.  **严禁直接生成序号**：你不知道全局顺序，严禁生成 `[1]` 或 `[2]`。
-2.  **必须使用占位符**：当你引用库中 `ID_x` 的文献时，请在正文中标注 `[REF:ID_x]`。
-    - *示例*: 根据研究 `[REF:ID_0]`，... 而李四认为 `[REF:ID_5]`。
-3.  **可用参考文献库**:
+### **策略D: 强制引用协议 (Mandatory Citation)**
+本章节分配了特定的参考文献（根据章节主题智能分配），你**必须全部引用**，并且**按顺序引用**。
+即便文献内容与当前语境关联不强，你也必须使用“过渡性语言”（如：*此外，也有学者研究了...*）将其强行融入，**做到自圆其说**。
+
+**分配给本章的文献**:
 {ref_context}
+
+**引用操作**:
+1.  **必须使用**列表中所有的 ID。
+2.  **格式**: 在句子末尾标记 `[REF:ID_x]`。
+3.  **禁止遗漏**: 列表里的文献一个都不能少。
 """
     else:
-        ref_instruction = "### **策略C: 内容专注**\n本章节重点在于逻辑分析，**无需**强制插入参考文献引用，请专注于内容深度。"
+        ref_instruction = "### **策略D: 内容专注**\n本章节**无需**插入参考文献引用，请专注于逻辑分析。"
 
-    # --- 2. 章节专属指令 ---
+    # --- 章节专属逻辑 ---
     section_rule = ""
     if "摘要" in current_chapter_title:
         section_rule = """
 **当前任务：撰写中英文摘要**
-请严格按照以下格式输出：
+格式要求：
 ### 摘要
-[中文摘要，约350字。包含背景、目的、方法、结论]
-**关键词**：[3-5个中文关键词，分号隔开]
+　　[中文摘要，350字左右]
+**关键词**：[中文关键词]
 
 ### Abstract
-[对应英文摘要，语法严谨]
-**Keywords**: [对应英文关键词]
+　　[English Abstract]
+**Keywords**: [English Keywords]
 """
     elif "背景" in current_chapter_title or "意义" in current_chapter_title:
-        section_rule = "**当前任务：撰写背景与意义**\n必须结合中国近几年真实政策与社会现状。年份必须用阿拉伯数字（如2024年）。"
+        section_rule = "**当前任务：撰写背景与意义**\n结合真实政策。年份必须用阿拉伯数字（如2024年）。"
     elif "现状" in current_chapter_title or "综述" in current_chapter_title:
-        section_rule = "**当前任务：撰写文献综述**\n结构：总-分-总。必须结合参考文献进行评述，引用格式为 `[REF:ID_x]`。"
-    elif "方法" in current_chapter_title and "内容" not in current_chapter_title:
-        section_rule = "**当前任务：撰写研究方法**\n分点回答。包含：文献研究法、数据分析法、实证分析法等。"
+        section_rule = "**当前任务：撰写文献综述**\n结构：总-分-总。必须把分配的参考文献全部用完。"
     else:
-        section_rule = "**当前任务：撰写正文分析**\n论证深度：隐含“为什么”和“怎么证明”。逻辑链清晰。"
+        section_rule = "**当前任务：撰写正文**\n论证深度：为什么？怎么证明？\n句式：倒装句、强调句。"
 
-    # --- 3. 终极 Prompt 组合 ---
     return f"""
-# 角色 (Identity)
-你现在扮演XX专业内的**顶尖学术研究者**与**风格拟态专家（Style Mimicry Expert）**。
-你的任务是：撰写符合严谨学术标准、数据规范、完全去AI痕迹的论文内容。
+# 角色
+你现在扮演XX专业内的**顶尖学术研究者**。
+任务：撰写严谨、高困惑度、**完全去AI痕迹**的内容。
 
-# 核心策略 (Core Strategies) - 必须严格遵守
+### **策略A: 格式与排版 (Strict Formatting)**
+1.  **段落缩进**: **所有段落的开头必须包含两个全角空格（　　）**。这是死命令。
+2.  **分段原则**: 
+    -   严禁“一段到底”。
+    -   严禁Markdown列表（Bullet points）。
+    -   每段约 200-300 字，逻辑清晰。
+3.  **标题禁忌**: 不要输出章节标题，直接写正文内容。
 
-### **策略A: 深度风格拟态与去AI化**
-*(目标：通过增加解释性、词汇替换和句式重塑，消除机器味)*
+### **策略B: 语言拟态**
+1.  **词汇清洗**: 禁词(冒号,首先,其次,综上所述,赋能,抓手)。
+2.  **句式重塑**: 句子20-25字。多用倒装句。
+3.  **数字规范**: **必须使用阿拉伯数字** (2024年, 15.8%)。严禁中文数字。
 
-1.  **动词短语扩展 (Verbose Elaboration)**:
-    -   将简洁动词替换为带过程描述的短语。
-    -   *示例*: “管理”→“开展...的管理工作”；“分析”→“对...进行深度剖析”；“验证”→“开展相关的验证工作”。
-2.  **词汇清洗 (Vocabulary Cleansing)**:
-    -   **绝对禁词**: 冒号(:)、首先、其次、最后、综上所述、此外、因此、从而、进而、旨在、基于此、意味着、扮演、至关重要、赋能、抓手、一系列。
-    -   **强制替换**: “借助/利用”→“靠着/凭借”；“剖析”→“分析”；“本文”→“本研究”；“提升”→“让...得到提高”。
-3.  **句式重塑 (Structure)**:
-    -   **长度控制**: 强制打破机械节奏，句子控制在 20-25 字，长短句交替。
-    -   **多样化**: 大量使用**倒装句**（“针对...问题，本研究...”）、**省略句**（删去不必要的主语“我们”）。
-4.  **隐性衔接**:
-    -   **严禁使用路标词**。使用语义的自然流动来承接上下文。把逗号多的短句融合成长句。
-
-### **策略B: 数据与实证规范 (Data Protocol)**
-1.  **阿拉伯数字强制 (Arabic Numerals Only)**:
-    -   **所有年份、统计数据、百分比、比例必须使用阿拉伯数字**。
-    -   *正确*: 2024年, 15.8%, 3000万, 1:5, 3.1倍。
-    -   *错误*: 二零二四年, 百分之十五, 三千万, 三点一倍。
-2.  **模拟数据规则**: 
-    -   若需模拟数据，**严禁使用整数**（如100%），**严禁使用2和5的倍数**（如20%, 50%）。
-    -   数据必须精确到小数点后两位（如 34.17%），且符合逻辑。
-
+### **策略C: 章节专属逻辑**
 {section_rule}
 
 {ref_instruction}
 
-### **策略E: 输出规范**
-1.  **字数控制**: 本部分目标 **{target_words} 字**。拒绝空洞拖沓。
-2.  **格式**: 
-    -   **不要输出标题**（摘要章节除外）。
-    -   **全文严禁使用冒号（:）**，请用文字连接。
-    -   直接输出正文，用自然段落区分。
+### **策略E: 字数控制**
+目标: **{target_words} 字**。确保内容充实。
 
 请开始写作。
 """
@@ -180,57 +254,75 @@ class PaperAutoWriter:
             return f"[Error: {str(e)}]"
 
     def generate_stream(self, task_id: str, title: str, chapters: List[Dict], references_raw: str) -> Generator[str, None, None]:
-        # 初始化引用管理器 (静态锚定)
         ref_manager = ReferenceManager(references_raw)
-        ref_context = ref_manager.get_prompt_context()
-
-        yield f"data: {json.dumps({'type': 'log', 'msg': f'系统初始化完成。文献库载入: {len(ref_manager.all_refs)} 条'})}\n\n"
         
+        yield f"data: {json.dumps({'type': 'log', 'msg': f'系统初始化... 文献库载入: {len(ref_manager.all_refs)} 条'})}\n\n"
+        
+        # --- 1. 智能分配参考文献 ---
+        # 这一步会根据章节标题（国内/国外）自动分配对应的文献
+        chapter_ref_map = ref_manager.distribute_references_smart(chapters)
+
         full_content = f"# {title}\n\n"
         context = "这是论文的开头。"
-        
         total_chapters = len(chapters)
         
         for i, chapter in enumerate(chapters):
-            # --- 暂停/停止逻辑 ---
+            # --- 暂停/停止 ---
             while TASK_STATES.get(task_id) == "paused":
                 time.sleep(1)
                 yield f"data: {json.dumps({'type': 'ping'})}\n\n"
-            
             if TASK_STATES.get(task_id) == "stopped":
                 yield f"data: {json.dumps({'type': 'log', 'msg': '任务已终止'})}\n\n"
                 break
 
             sec_title = chapter['title']
             
-            # --- 父级节点处理 (只生成标题) ---
+            # --- 父级节点 ---
             if chapter.get('is_parent', False):
-                yield f"data: {json.dumps({'type': 'log', 'msg': f'>>> 创建章节标题: {sec_title}'})}\n\n"
+                yield f"data: {json.dumps({'type': 'log', 'msg': f'>>> 章节标题: {sec_title}'})}\n\n"
                 section_md = f"## {sec_title}\n\n" 
                 full_content += section_md
                 yield f"data: {json.dumps({'type': 'content', 'md': section_md})}\n\n"
                 continue 
 
-            # --- 叶子节点生成 ---
+            # --- 叶子节点 ---
             target = int(chapter.get('words', 500))
-            yield f"data: {json.dumps({'type': 'log', 'msg': f'正在撰写 [{i+1}/{total_chapters}]: {sec_title} (目标 {target}字)...'})}\n\n"
             
-            # 生成 Prompt
+            # 获取分配给该章节的参考文献
+            ref_context = chapter_ref_map.get(i, "")
+            
+            log_msg = f"正在撰写 [{i+1}/{total_chapters}]: {sec_title}"
+            if ref_context:
+                ref_count = ref_context.count("ID_")
+                log_msg += f" [智能分配 {ref_count} 篇文献]"
+            
+            yield f"data: {json.dumps({'type': 'log', 'msg': log_msg})}\n\n"
+            
             sys_prompt = get_academic_thesis_prompt(target, ref_context, sec_title)
             user_prompt = f"论文题目：{title}\n当前章节：{sec_title}\n前文脉络：{context[-600:]}\n字数要求：{target}字"
             
-            # 调用 LLM
             raw_content = self._call_llm(sys_prompt, user_prompt)
-            
-            # 替换引用 [REF:ID_x] -> [x+1]
             final_content = ref_manager.process_text(raw_content)
             
-            # 扩写逻辑 (摘要除外)
+            # --- 格式清洗（缩进/空行） ---
+            lines = final_content.split('\n')
+            formatted_lines = []
+            for line in lines:
+                line = line.strip()
+                if line and not line.startswith('　　') and not line.startswith('#'):
+                    line = '　　' + line # 强制缩进
+                formatted_lines.append(line)
+            final_content = '\n\n'.join(formatted_lines)
+
+            # 扩写逻辑
             if "摘要" not in sec_title and len(final_content) < target * 0.6:
                 yield f"data: {json.dumps({'type': 'log', 'msg': f'   - 字数不足，进行扩写...'})}\n\n"
-                expand_prompt = sys_prompt + "\n内容篇幅不足，请在保持‘阿拉伯数字’和‘去AI化’风格的前提下，增加实证分析，大幅扩充篇幅。"
-                added_raw = self._call_llm(expand_prompt, f"请扩写此内容：\n{raw_content}")
-                final_content = ref_manager.process_text(added_raw)
+                expand_prompt = sys_prompt + "\n内容篇幅不足，请在保持格式（全角缩进、阿拉伯数字）的前提下，增加细节分析。"
+                added_raw = self._call_llm(expand_prompt, f"请扩写：\n{raw_content}")
+                added_processed = ref_manager.process_text(added_raw)
+                
+                added_lines = [ '　　'+l.strip() if l.strip() and not l.startswith('　　') else l for l in added_processed.split('\n') ]
+                final_content += '\n\n' + '\n\n'.join(added_lines)
 
             section_md = f"## {sec_title}\n\n{final_content}\n\n"
             full_content += section_md
@@ -240,7 +332,6 @@ class PaperAutoWriter:
             time.sleep(0.5)
 
         if TASK_STATES.get(task_id) != "stopped":
-            # --- 生成参考文献 (原样输出) ---
             yield f"data: {json.dumps({'type': 'log', 'msg': '生成参考文献...'})}\n\n"
             bib_section = ref_manager.generate_bibliography()
             full_content += bib_section
@@ -249,7 +340,7 @@ class PaperAutoWriter:
         
         if task_id in TASK_STATES: del TASK_STATES[task_id]
 
-# 路由部分
+# 路由部分 (保持不变)
 @app.route('/')
 def index(): return render_template('index.html')
 

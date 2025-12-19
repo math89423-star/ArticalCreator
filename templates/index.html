@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AI 深度论文生成助手 (层级修正版)</title>
+    <title>AI 深度论文生成助手 (智能大纲版)</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <style>
@@ -19,7 +19,6 @@
         .chapter-config-item .label { font-weight: 600; font-size: 0.9rem; color: #495057; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 180px;}
         
         textarea { font-size: 0.85rem !important; resize: vertical; }
-        /* 针对不同层级标题的渲染优化 */
         .markdown-body h2 { border-left: 5px solid #0d6efd; padding-left: 10px; margin-top: 40px; color: #2c3e50; font-size: 1.6rem;}
         .markdown-body p { text-align: justify; line-height: 1.8; margin-bottom: 1.2rem; color: #333; }
         .step-badge { background: #0d6efd; color: white; padding: 2px 8px; border-radius: 4px; font-size: 0.75rem; margin-right: 5px; }
@@ -46,11 +45,11 @@
 
                     <div class="mb-3">
                         <label class="form-label fw-bold d-flex justify-content-between">
-                            <span><span class="step-badge">2</span>完整大纲 (自动识别层级)</span>
+                            <span><span class="step-badge">2</span>完整大纲 (支持各种格式)</span>
                             <a href="#" class="text-decoration-none small" onclick="loadDemoOutline()">填入示例</a>
                         </label>
-                        <textarea class="form-control" id="outlineRaw" rows="10" placeholder="摘要&#10;1. 绪论&#10;1.1 研究背景&#10;1.4 研究内容与方法&#10;1.4.1 研究内容&#10;1.4.2 研究方法" required oninput="parseOutline()"></textarea>
-                        <div class="form-text text-muted small">系统会自动识别 "1.4" 为父标题(不写内容)，"1.4.1" 为子内容。</div>
+                        <textarea class="form-control" id="outlineRaw" rows="12" placeholder="直接粘贴你的大纲，例如：&#10;第一章 绪论&#10;1.1 研究背景&#10;..." required oninput="parseOutline()"></textarea>
+                        <div class="form-text text-muted small">系统将自动识别父子层级，父标题不生成内容。</div>
                     </div>
 
                     <div class="mb-3">
@@ -86,7 +85,7 @@
                 </div>
                 <div id="resultContent" class="markdown-body">
                     <div class="text-center text-muted mt-5 pt-5">
-                        <p style="font-size: 1.2rem;">💡 智能识别大纲层级，父级标题将只作为结构展示</p>
+                        <p style="font-size: 1.2rem;">💡 智能识别大纲层级，支持中文章节、阿拉伯数字等多种格式</p>
                     </div>
                 </div>
             </div>
@@ -95,7 +94,7 @@
 </div>
 
 <script>
-    let parsedStructure = []; // 存储结构化大纲
+    let parsedStructure = []; 
     let fullMarkdownText = "";
     let currentTaskId = "";
     let isPaused = false;
@@ -106,88 +105,106 @@
 
     function loadDemoOutline() {
         document.getElementById('outlineRaw').value = `摘要
-1. 绪论
-1.1 研究背景
-1.2 研究意义
-1.4 研究内容与方法
-1.4.1 研究内容
-1.4.2 研究方法
-2. 理论基础
-2.1 核心概念
-2.2 理论框架
-3. 结论`;
+第一章 绪论
+1.1 研究背景及意义
+1.2 国内外研究现状
+1.2.1 国外研究现状
+1.2.2 国内研究现状
+1.3 主要研究内容
+第二章 相关理论基础
+2.1 深度学习理论
+2.2 神经网络模型
+第三章 核心算法设计
+3.1 数据预处理
+3.2 模型架构
+第四章 实验与分析
+第五章 总结与展望
+参考文献`;
         parseOutline();
     }
 
-    // --- 核心：层级解析算法 ---
+    // --- 核心：智能层级解析算法 ---
     function parseOutline() {
         const text = document.getElementById('outlineRaw').value;
-        // 1. 初步清洗，去除空行
-        let rawLines = text.split('\n').map(l => l.trim()).filter(l => l);
+        const lines = text.split('\n'); // 不先 trim，保留缩进信息以备用
         
-        // 2. 摘要去重：如果有了“摘要”，就过滤掉“Abstract”
-        const hasChineseAbstract = rawLines.some(l => l.includes("摘要"));
-        if (hasChineseAbstract) {
-            rawLines = rawLines.filter(l => !l.toLowerCase().includes("abstract") && !l.includes("Abstract"));
+        // 1. 预处理行：计算层级 (Level)
+        let processedLines = [];
+        lines.forEach(line => {
+            const trimmed = line.trim();
+            if(!trimmed) return;
+            
+            const level = getLineLevel(trimmed, line);
+            processedLines.push({
+                text: trimmed,
+                level: level,
+                isParent: false // 默认为 false，后续计算
+            });
+        });
+
+        // 2. 识别父子关系：如果下一行的 level > 当前行 level，则当前行为父节点
+        for (let i = 0; i < processedLines.length - 1; i++) {
+            if (processedLines[i+1].level > processedLines[i].level) {
+                processedLines[i].isParent = true;
+            }
         }
 
-        // 3. 构建树形结构逻辑预判
-        // 我们需要识别每一行是否是“父节点”
-        // 规则：如果 Line A 的序号（如 1.4）是 Line B 序号（如 1.4.1）的前缀，则 A 是父节点
-        
+        // 3. 分组构建 UI 结构
         parsedStructure = [];
-        let currentMainGroup = null; // 用于UI显示的组（大章）
+        let currentMainGroup = null;
 
-        // 正则提取序号：匹配 "1.", "1.4", "1.4.1" 等
-        const numRegex = /^(\d+(\.\d+)*)/; 
-
-        for (let i = 0; i < rawLines.length; i++) {
-            const line = rawLines[i];
+        processedLines.forEach(item => {
+            // Level 1 (第一章/1.) 或 特殊章节 (摘要/结论) 视为顶级分组
+            const isTopLevel = item.level === 1 || ["摘要", "Abstract", "参考文献", "致谢", "结论", "总结"].some(k => item.text.includes(k) && item.text.length < 10);
             
-            // 提取当前行序号
-            const matchCurrent = line.match(numRegex);
-            const numCurrent = matchCurrent ? matchCurrent[1] : null;
-            
-            let isParent = false;
-            
-            // 向后看一行，判断是否为父节点
-            if (i < rawLines.length - 1 && numCurrent) {
-                const nextLine = rawLines[i+1];
-                const matchNext = nextLine.match(numRegex);
-                const numNext = matchNext ? matchNext[1] : null;
-                
-                // 如果下一行的序号 以 当前行序号+. 开头 (例如 1.4.1 startsWith 1.4.)
-                if (numNext && numNext.startsWith(numCurrent + '.')) {
-                    isParent = true;
-                }
-            }
-
-            // 判断是否是顶级章节（用于UI分组显示字数控制）
-            // 简单逻辑：如果是 "1." 或 "摘要" 或 "结论"，视为一个UI配置组的开始
-            const isMainChapter = /^(\d+)(\.|、|\s)(?!\d)/.test(line) || ["摘要", "结论", "绪论"].some(k => line.includes(k)) && !line.includes(".");
-
-            if (isMainChapter) {
+            if (isTopLevel) {
                 currentMainGroup = { 
-                    title: line, 
-                    children: [], // 包含自己和所有子节点
+                    title: item.text, 
+                    children: [], 
                     defaultWords: 1000 
                 };
+                // 如果顶级章节本身不是父节点（即它下面没有小标题），它自己也要写内容
+                // 但为了统一，我们把顶级章节也作为一行加入 children
+                currentMainGroup.children.push(item);
                 parsedStructure.push(currentMainGroup);
             } else {
                 if (!currentMainGroup) {
+                    // 处理开头没有顶级章节的情况（如直接开始写 1.1）
                     currentMainGroup = { title: "前言/其他", children: [], defaultWords: 500 };
                     parsedStructure.push(currentMainGroup);
                 }
+                currentMainGroup.children.push(item);
             }
-            
-            // 将行信息加入当前组，并标记是否为 Parent
-            currentMainGroup.children.push({
-                text: line,
-                isParent: isParent
-            });
-        }
+        });
         
         renderConfigArea();
+    }
+
+    // --- 智能层级判断函数 ---
+    function getLineLevel(text, rawLine) {
+        // 策略 1: 关键字匹配 (Level 1)
+        if (/^第[一二三四五六七八九十]+[章|部分]/.test(text)) return 1;
+        if (/^Chapter\s+\d+/i.test(text)) return 1;
+        if (/^(摘要|Abstract|参考文献|致谢|结论|总结与展望)/.test(text)) return 1;
+
+        // 策略 2: 数字编号匹配 (1.1.1)
+        const match = text.match(/^(\d+(\.\d+)*)/);
+        if (match) {
+            const parts = match[1].split('.').filter(p => p); // 过滤掉空串
+            // "1" -> level 1, "1.1" -> level 2, "1.1.1" -> level 3
+            return parts.length; 
+        }
+
+        // 策略 3: 中文小标题匹配 (一、 (一) 1、)
+        if (/^[一二三四五六七八九十]+、/.test(text)) return 2;
+        if (/^（[一二三四五六七八九十]+）/.test(text)) return 3;
+        
+        // 策略 4: 缩进检测 (如果没有明显编号，靠缩进)
+        const leadingSpaces = rawLine.match(/^\s*/)[0].length;
+        if (leadingSpaces >= 4) return 3;
+        if (leadingSpaces >= 2) return 2;
+
+        return 2; // 默认作为二级标题
     }
 
     function renderConfigArea() {
@@ -197,33 +214,36 @@
 
         parsedStructure.forEach((group, index) => {
             // 计算这个大组里有多少个“叶子节点”（即实际需要写字的章节）
+            // 排除掉所有 isParent=true 的节点
             const leafCount = group.children.filter(c => !c.isParent).length;
             
             // 智能预设字数
             let w = 1000;
-            if (group.title.includes("摘要")) w = 350;
-            else if (group.title.includes("绪论")) w = 1500;
-            else if (leafCount > 3) w = leafCount * 400; // 如果子项多，字数增加
+            if (group.title.includes("摘要") || group.title.includes("Abstract")) w = 350;
+            else if (group.title.includes("参考文献")) w = 0; // 参考文献不分配生成字数
+            else if (leafCount > 3) w = leafCount * 400; 
             
-            totalWords += w;
+            if (w > 0) totalWords += w;
 
-            const div = document.createElement('div');
-            div.className = 'chapter-config-item';
-            div.innerHTML = `
-                <div>
-                    <div class="label" title="${group.title}">${group.title}</div>
-                    <div class="sub-count">
-                        ${group.children.length} 个标题 
-                        <span class="badge bg-secondary" style="font-size:0.6rem">${leafCount} 个写作点</span>
+            // 只有需要写字的章节才显示配置
+            if (w > 0 || leafCount > 0) {
+                const div = document.createElement('div');
+                div.className = 'chapter-config-item';
+                div.innerHTML = `
+                    <div>
+                        <div class="label" title="${group.title}">${group.title}</div>
+                        <div class="sub-count">
+                            <span class="badge bg-secondary" style="font-size:0.6rem">${leafCount} 个写作点</span>
+                        </div>
                     </div>
-                </div>
-                <div class="d-flex align-items-center">
-                    <input type="number" class="form-control form-control-sm word-input" 
-                           data-idx="${index}" value="${w}" step="50" min="0" onchange="recalcTotal()">
-                    <span class="ms-1 small text-muted">字</span>
-                </div>
-            `;
-            container.appendChild(div);
+                    <div class="d-flex align-items-center">
+                        <input type="number" class="form-control form-control-sm word-input" 
+                               data-idx="${index}" value="${w}" step="50" min="0" onchange="recalcTotal()">
+                        <span class="ms-1 small text-muted">字</span>
+                    </div>
+                `;
+                container.appendChild(div);
+            }
         });
         document.getElementById('totalWords').innerText = totalWords;
     }
@@ -234,7 +254,7 @@
         document.getElementById('totalWords').innerText = total;
     }
 
-    // --- 提交逻辑：构建任务列表 ---
+    // --- 提交逻辑 ---
     document.getElementById('paperForm').onsubmit = async (e) => {
         e.preventDefault();
         currentTaskId = generateUUID();
@@ -245,24 +265,30 @@
 
         // 遍历UI上的大组
         parsedStructure.forEach((group, index) => {
-            const totalAssigned = parseInt(inputs[index].value) || 0;
+            // 找到对应的输入框（可能有些组没显示输入框，如参考文献）
+            let totalAssigned = 0;
+            // 查找对应 index 的 input，因为 filter 后 index 可能不连续，这里简单处理：
+            // 重新获取一下当前 group 在 inputs 里的对应值
+            // 更好的方式是直接用 filter 后的逻辑，但这里我们假设顺序一致
+            const inputEl = document.querySelector(`.word-input[data-idx="${index}"]`);
+            if (inputEl) totalAssigned = parseInt(inputEl.value) || 0;
+
             const leafNodes = group.children.filter(c => !c.isParent);
             const leafCount = leafNodes.length;
-            
-            // 平均分配字数给叶子节点
             const perWord = leafCount > 0 ? Math.floor(totalAssigned / leafCount) : 0;
 
-            // 遍历该组的所有行（包括父节点）
             group.children.forEach(child => {
+                // 如果是大纲里的“参考文献”章节，跳过生成，或者只作为标题占位
+                if (child.text.includes("参考文献") && child.level === 1) return;
+
                 flatTasks.push({
                     title: child.text,
-                    is_parent: child.isParent, // 告诉后端这是父节点
-                    words: child.isParent ? 0 : Math.max(200, perWord) // 父节点0字，叶子节点分配字数
+                    is_parent: child.isParent, 
+                    words: child.isParent ? 0 : Math.max(200, perWord) 
                 });
             });
         });
 
-        // UI 状态更新
         const btn = document.getElementById('btnSubmit');
         const logArea = document.getElementById('logArea');
         const resultDiv = document.getElementById('resultContent');
@@ -277,7 +303,7 @@
         const formData = new FormData();
         formData.append('title', document.getElementById('paperTitle').value);
         formData.append('references', document.getElementById('references').value);
-        formData.append('chapter_data', JSON.stringify(flatTasks)); // 发送包含 is_parent 标记的任务
+        formData.append('chapter_data', JSON.stringify(flatTasks));
         formData.append('task_id', currentTaskId);
 
         try {
@@ -314,8 +340,7 @@
         }
     };
 
-    // 暂停/停止/导出 函数保持不变 (复用之前的代码)
-    async function togglePause() { /* 同上个版本 */
+    async function togglePause() { 
         const btn = document.getElementById('btnPause');
         const action = isPaused ? 'resume' : 'pause';
         await fetch('/control', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ task_id: currentTaskId, action: action })});
@@ -323,7 +348,7 @@
         btn.innerText = isPaused ? "▶ 继续" : "⏸ 暂停";
         btn.className = isPaused ? "btn btn-info btn-sm me-2" : "btn btn-warning btn-sm me-2";
     }
-    async function stopTask() { /* 同上个版本 */ 
+    async function stopTask() { 
         if(!confirm("确定停止？")) return;
         await fetch('/control', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ task_id: currentTaskId, action: 'stop' })});
         document.getElementById('btnSubmit').disabled = false;

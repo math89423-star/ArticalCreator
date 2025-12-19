@@ -80,7 +80,8 @@
                     <div id="controlButtons" style="display: none;">
                         <button class="btn btn-warning btn-sm me-2" id="btnPause" onclick="togglePause()">⏸ 暂停</button>
                         <button class="btn btn-danger btn-sm me-2" onclick="stopTask()">⏹ 停止</button>
-                        <button class="btn btn-success btn-sm" onclick="exportToMarkdown()">📥 导出 MD</button>
+                        <button class="btn btn-success btn-sm me-2" onclick="exportToMarkdown()">📥 导出 MD</button>
+                        <button class="btn btn-primary btn-sm" onclick="exportToDocx()">📄 导出 Word (Docx)</button>
                     </div>
                 </div>
                 <div id="resultContent" class="markdown-body">
@@ -265,11 +266,7 @@
 
         // 遍历UI上的大组
         parsedStructure.forEach((group, index) => {
-            // 找到对应的输入框（可能有些组没显示输入框，如参考文献）
             let totalAssigned = 0;
-            // 查找对应 index 的 input，因为 filter 后 index 可能不连续，这里简单处理：
-            // 重新获取一下当前 group 在 inputs 里的对应值
-            // 更好的方式是直接用 filter 后的逻辑，但这里我们假设顺序一致
             const inputEl = document.querySelector(`.word-input[data-idx="${index}"]`);
             if (inputEl) totalAssigned = parseInt(inputEl.value) || 0;
 
@@ -278,7 +275,6 @@
             const perWord = leafCount > 0 ? Math.floor(totalAssigned / leafCount) : 0;
 
             group.children.forEach(child => {
-                // 如果是大纲里的“参考文献”章节，跳过生成，或者只作为标题占位
                 if (child.text.includes("参考文献") && child.level === 1) return;
 
                 flatTasks.push({
@@ -295,6 +291,7 @@
         const ctrlDiv = document.getElementById('controlButtons');
         
         btn.disabled = true;
+        // 关键修复：立即显示控制按钮
         ctrlDiv.style.display = 'block';
         document.getElementById('btnPause').innerText = "⏸ 暂停";
         resultDiv.innerHTML = "";
@@ -327,7 +324,8 @@
                             }
                             else if (data.type === 'done') {
                                 btn.disabled = false;
-                                ctrlDiv.style.display = 'none';
+                                // 任务完成时保持显示，方便导出
+                                ctrlDiv.style.display = 'block';
                             }
                             logArea.scrollTop = logArea.scrollHeight;
                         } catch (e) {}
@@ -352,8 +350,10 @@
         if(!confirm("确定停止？")) return;
         await fetch('/control', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ task_id: currentTaskId, action: 'stop' })});
         document.getElementById('btnSubmit').disabled = false;
-        document.getElementById('controlButtons').style.display = 'none';
+        // 停止后也保留显示，也许用户想导出已生成的部分
+        // document.getElementById('controlButtons').style.display = 'none'; 
     }
+    
     function exportToMarkdown() {
         if(!fullMarkdownText) return;
         const blob = new Blob([fullMarkdownText], { type: 'text/markdown' });
@@ -361,6 +361,36 @@
         a.href = URL.createObjectURL(blob);
         a.download = 'thesis_result.md';
         a.click();
+    }
+
+    async function exportToDocx() {
+        if(!fullMarkdownText) {
+            alert("没有可导出的内容！");
+            return;
+        }
+        
+        try {
+            const response = await fetch('/export_docx', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ content: fullMarkdownText })
+            });
+            
+            if (response.ok) {
+                const blob = await response.blob();
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = document.getElementById('paperTitle').value + "_论文.docx" || 'thesis_result.docx';
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+            } else {
+                alert("导出失败");
+            }
+        } catch (e) {
+            alert("导出错误: " + e);
+        }
     }
 </script>
 </body>

@@ -221,6 +221,14 @@ def get_academic_thesis_prompt(target_words: int, ref_content_list: List[str], c
 
 ### **策略E: 字数控制**
 {word_count_strategy}
+**扩写技巧**: 如果字数不足，请对核心概念进行定义扩展，或增加“举例说明”、“对比分析”、“理论支撑”等环节，**严禁**通过重复废话凑字数。
+
+### **策略G: 结构与边界控制 (CRITICAL - 绝对禁止项)**
+1.  **禁止自拟标题**: 输出内容**严禁包含**任何 Markdown 标题符号（#、##、###）。
+    -   错误示例：`### 1.1 背景分析`
+    -   正确操作：直接开始写背景分析的**正文段落**。
+2.  **禁止越界**: **严禁**撰写下一个章节的内容。只关注当前章节：**“{current_chapter_title}”**。
+3.  **禁止分点**: 除非是“研究方法”章节，否则严禁使用 `1.` `2.` 或 `*` 进行罗列，请用“首先、其次、此外”等连接词写成连贯段落。
 
 请开始写作。
 """
@@ -301,6 +309,73 @@ class PaperAutoWriter:
             user_prompt = f"题目：{title}\n章节：{sec_title}\n前文：{context[-600:]}\n字数：{target}\n{facts_context}"
             
             raw_content = self._call_llm(sys_prompt, user_prompt)
+
+            # --- [新增] 智能字数检查与扩写逻辑 ---
+            # 统计有效字符数 (去除空白符)
+            current_len = len(re.sub(r'\s', '', raw_content))
+            # 如果字数少于目标的 60% (根据实际体验调整阈值)，强制扩写
+            if current_len < target * 0.5:
+                yield f"data: {json.dumps({'type': 'log', 'msg': f'   - 检测到字数不足 ({current_len}/{target})，进行深度扩写(禁止新增标题)...'})}\n\n"
+                
+                expand_prompt = (
+                    f"当前输出字数 ({current_len}字) 未达到要求 ({target}字)。\n"
+                    f"请对内容进行**深度扩写**，必须严格遵守以下红线：\n"
+                    f"1. **零废话**：严禁输出“好的”、“如下所示”、“经过扩写”等任何对话式语句。**直接输出论文正文**。\n"
+                    f"2. **引用保护**：所有参考文献引用（作者、年份、REF标记）必须**原样保留**，不可修改。\n"
+                    f"3. **禁止标题**：严禁新增任何 Markdown 标题 (#/##)。\n"
+                    f"4. **禁止统计**：文末严禁输出“(全文x字)”之类的统计语。\n"
+                    f"请直接输出扩写后的内容。"
+                )
+                
+                # 将初稿作为上下文，要求扩写
+                expand_messages = [
+                    {"role": "system", "content": sys_prompt},
+                    {"role": "user", "content": user_prompt},
+                    {"role": "assistant", "content": raw_content},
+                    {"role": "user", "content": expand_prompt}
+                ]
+                try:
+                    # 使用临时调用进行扩写
+                    resp = self.client.chat.completions.create(
+                        model=self.model,
+                        messages=expand_messages,
+                        temperature=0.7
+                    )
+                    raw_content = resp.choices[0].message.content.strip()
+                except Exception as e:
+                    print(f"扩写失败: {e}")
+
+            # 2. [新增] 字数过多 -> 精简
+            elif current_len > target * 1.5:
+                yield f"data: {json.dumps({'type': 'log', 'msg': f'   - 检测到字数过多 ({current_len}/{target})，正在进行精简...'})}\n\n"
+                
+                condense_prompt = (
+                    f"当前输出字数 ({current_len}字) 远超要求 ({target}字)。\n"
+                    f"请对内容进行**精简**，必须严格遵守以下红线：\n"
+                    f"1. **零废话**：严禁输出“好的”、“已为您精简”等任何对话式语句。**直接输出论文正文**。\n"
+                    f"2. **引用绝对保留**：原文中的所有参考文献引用（如 '作者(年份)...[REF]'）**必须原样保留**，严禁删除或修改。\n"
+                    f"3. **禁止统计**：文末严禁输出“(全文x字)”之类的统计语。\n"
+                    f"4. **严控篇幅**：目标字数 {target} 字左右。\n"
+                    f"请直接输出精简后的内容。"
+                )
+                
+                condense_messages = [
+                    {"role": "system", "content": sys_prompt},
+                    {"role": "user", "content": user_prompt},
+                    {"role": "assistant", "content": raw_content},
+                    {"role": "user", "content": condense_prompt}
+                ]
+                
+                try:
+                    resp = self.client.chat.completions.create(
+                        model=self.model,
+                        messages=condense_messages,
+                        temperature=0.7
+                    )
+                    raw_content = resp.choices[0].message.content.strip()
+                except Exception as e:
+                    print(f"精简失败: {e}")
+
 
             # 方案：比对第一行和sec_title，如果高度相似则移除第一行
             temp_lines = raw_content.strip().split('\n')

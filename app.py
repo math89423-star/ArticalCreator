@@ -82,6 +82,10 @@ class MarkdownToDocx:
             code_str = re.sub(r'^```python', '', code_str.strip(), flags=re.MULTILINE|re.IGNORECASE)
             code_str = re.sub(r'^```', '', code_str.strip(), flags=re.MULTILINE)
             
+            # [核心修复] 强制清洗特殊空白符，防止 SyntaxError: invalid character in identifier
+            # \u3000: 全角空格, \u00A0: NBSP, \u200b: 零宽空格
+            code_str = code_str.replace('\u3000', ' ').replace('\u00A0', ' ').replace('\u200b', '')
+            
             # 2. 设置绘图环境 (解决中文乱码)
             plt.clf() # 清除旧图
             plt.figure(figsize=(6, 4)) # 适中的学术图表尺寸
@@ -448,13 +452,19 @@ def get_academic_thesis_prompt(target_words: int, ref_content_list: List[str], c
             
             section_rule = f"""
 **当前任务：撰写研究现状 (总-分-总结构)**
+**引用规范 (CRITICAL)**:
+1.  **禁止模糊**: 严禁使用“某学者”、“有研究指出”、“该作品”等模糊词汇。
+2.  **强制格式**: 必须明确写出 **"作者姓名(年份)"** 或 **"《作品名称》(年份)"**。
+    -   正确示例: "张三(2023)在《...》中提出了...[REF]"
+    -   正确示例: "Li et al. (2022) 构建了...[REF]"
+3.  **内容对应**: 论述内容必须严格基于分配的参考文献摘要，不可编造。
+
 **严格逻辑**:
-1. **第一段 (导语)**: 简单概述标题内容，约80-100字，最后一句引出下方引用。
-2. **第二段 (核心引用)**: 
-   - **首条详述**: 必须对列表中的**第一条参考文献**进行详细阐述（约200字）。
-   - **后续罗列**: 对剩余的参考文献进行顺序综述，格式为“谁谁谁(年份)提出了...[REF]”。
-   - **本段总字数**: 不低于450字。
-3. **第三段 (评述/启示)**: 总结这些文献给本研究带来的启示（约100字）。
+1.  **第一段 (导语)**: 概述研究背景，约80字。
+2.  **第二段 (核心综述)**: 
+    -   **首条详述**: 详细评述第一条文献 {first_ref}，需包含作者、年份、核心贡献（约150字）。
+    -   **后续综述**: 对剩余文献 {other_refs_prompt} 进行串联，每条文献必须点名作者和年份，并插入 `[REF]`。
+3.  **第三段 (评述)**: 总结现有研究的不足，引出本研究的切入点。
 
 **分配的文献**:
 - **首条重点文献**: {first_ref}
@@ -535,14 +545,15 @@ def get_academic_thesis_prompt(target_words: int, ref_content_list: List[str], c
     -   使用 Markdown 表格语法。
     -   **表名**: 在表格**上方**，格式：`**表{chapter_num}.X 表名**`。
 2.  **统计图 (Python Matplotlib)**:
-    -   请编写一段**可直接运行的 Python 代码**来绘制图表。
+    -   请编写一段**标准、无错、可直接运行的 Python 代码**。
     -   **代码块格式**: 使用 ` ```python ` 包裹。
-    -   **要求**: 
-        -   导入 `matplotlib.pyplot as plt`。
-        -   **数据自包含**: 直接在代码中定义数据（列表或字典），**严禁**读取外部 csv/excel 文件。
-        -   **字体**: 使用通用设置 `plt.rcParams['font.sans-serif'] = ['SimHei']` 以支持中文。
-        -   **风格**: `plt.style.use('seaborn-v0_8-whitegrid')` 或类似学术风格。
-        -   最后**不需要** `plt.show()` 或 `plt.savefig`，后端会自动捕获。
+    -   **关键要求 (CRITICAL)**: 
+        -   **库导入**: 必须在代码开头显式导入：`import matplotlib.pyplot as plt`, `import seaborn as sns`, `import pandas as pd`, `import numpy as np`。
+        -   **数据自包含**: 数据必须在代码内部完整定义（使用 DataFrame 或字典），**严禁**读取外部文件。
+        -   **格式规范**: 严禁使用全角空格（\\u3000）或不间断空格（NBSP），必须使用标准空格缩进。
+        -   **字体设置**: 必须包含 `plt.rcParams['font.sans-serif'] = ['SimHei', 'Arial Unicode MS', 'sans-serif']` 解决中文乱码。
+        -   **绘图逻辑**: 代码需简单健壮，不要使用复杂或过时的 API。
+        -   **输出**: 最后**不需要** `plt.show()`。
     -   **图名**: 在代码块**下方**，格式：`**图{chapter_num}.X 图名**`。
 3.  **互动**: 正文必须包含 “如表{chapter_num}.1所示” 或 “如图{chapter_num}.1可见”。
 """
@@ -567,6 +578,8 @@ def get_academic_thesis_prompt(target_words: int, ref_content_list: List[str], c
 2.  **严禁夸大**: 
     -   **禁止**: “填补空白”、“国内首创”、“完美解决”。
     -   **必须用**: “丰富了...视角”、“提供了实证参考”、“优化了...”。
+3.  **真实性**: 引用真实数据，严禁捏造。
+4.  **文件引用**: **严禁编造《》内的政策/文件/著作名称**。必须确保该文件在真实世界存在且名称完全准确。如果不确定真实全称，**严禁使用书名号**，仅描述其内容即可。
 
 
 ### **策略C: 章节专属逻辑**
@@ -582,9 +595,6 @@ def get_academic_thesis_prompt(target_words: int, ref_content_list: List[str], c
 请开始写作。
 """
 
-# ==============================================================================
-# Agent
-# ==============================================================================
 class PaperAutoWriter:
     def __init__(self, api_key: str, base_url: str, model: str):
         self.client = OpenAI(api_key=api_key, base_url=base_url)
@@ -658,6 +668,16 @@ class PaperAutoWriter:
             user_prompt = f"题目：{title}\n章节：{sec_title}\n前文：{context[-600:]}\n字数：{target}\n{facts_context}"
             
             raw_content = self._call_llm(sys_prompt, user_prompt)
+
+            # 方案：比对第一行和sec_title，如果高度相似则移除第一行
+            temp_lines = raw_content.strip().split('\n')
+            if temp_lines:
+                # 去除 # * 和空格进行核心词比对
+                first_line_core = re.sub(r'[#*\s]', '', temp_lines[0])
+                title_core = re.sub(r'[#*\s]', '', sec_title)
+                # 如果第一行包含标题核心内容，且长度没有比标题长太多（防止误删正文第一句），则判定为重复标题
+                if title_core in first_line_core and len(first_line_core) < len(title_core) + 8:
+                    raw_content = '\n'.join(temp_lines[1:])
             processed_content = ref_manager.process_text_deterministic(raw_content)
             processed_content = TextCleaner.convert_cn_numbers(processed_content)
             

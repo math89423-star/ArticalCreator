@@ -205,11 +205,14 @@ def get_academic_thesis_prompt(target_words: int, ref_content_list: List[str], c
 1.  **字体规范**: **所有数字、字母、标点必须使用半角字符 (Half-width)**。
     -   正确: 2023, 50%, "Method"
     -   错误: ２０２３, ５０％, “Method”
-2.  **严禁夸大**: 
+2.  **数据优先级**: 
+    -   **最高优先级**: 如果输入中包含【用户提供的真实数据】，必须**无条件基于该数据**进行分析与制图，**严禁篡改数值**。
+    -   **次级来源**: 仅在用户未提供数据时，才使用【联网检索事实】或通用学术知识。
+3.  **严禁夸大**: 
     -   **禁止**: “填补空白”、“国内首创”、“完美解决”。
     -   **必须用**: “丰富了...视角”、“提供了实证参考”、“优化了...”。
-3.  **真实性**: 引用真实数据，严禁捏造。
-4.  **文件引用**: **严禁编造《》内的政策/文件/著作名称**。必须确保该文件在真实世界存在且名称完全准确。如果不确定真实全称，**严禁使用书名号**，仅描述其内容即可。
+4.  **严禁捏造**: 无论是用户数据还是检索数据，都必须保持逻辑自洽，严禁凭空杜撰实验结果。
+5.  **文件引用**: **严禁编造《》内的政策/文件/著作名称**。必须确保该政策/文件/著作，在真实世界存在且名称完全准确。如果不确定真实全称，**严禁使用书名号**，仅描述其内容即可。
 
 
 ### **策略C: 章节专属逻辑**
@@ -274,21 +277,25 @@ class PaperAutoWriter:
             return cn_map.get(match_cn.group(1), "")
         return ""
 
-    def generate_stream(self, task_id: str, title: str, chapters: List[Dict], references_raw: str) -> Generator[str, None, None]:
+    def generate_stream(self, task_id: str, title: str, chapters: List[Dict], references_raw: str, custom_data: str, check_status_func, initial_context: str = "") -> Generator[str, None, None]:
         ref_manager = ReferenceManager(references_raw)
         yield f"data: {json.dumps({'type': 'log', 'msg': '初始化...'})}\n\n"
         chapter_ref_map = ref_manager.distribute_references_smart(chapters)
+        
         full_content = f"# {title}\n\n"
-        context = "论文开头"
+        context = initial_context if initial_context else "论文开头"
         
         for i, chapter in enumerate(chapters):
-            while TASK_STATES.get(task_id) == "paused": time.sleep(1)
-            if TASK_STATES.get(task_id) == "stopped": break
-
+            while check_status_func() == "paused":
+                time.sleep(1)
+            if check_status_func() == "stopped": 
+                yield f"data: {json.dumps({'type': 'log', 'msg': '⚠️ 收到停止指令，正在中断...'})}\n\n"
+                break
             sec_title = chapter['title']
             if chapter.get('is_parent', False):
                 full_content += f"## {sec_title}\n\n"
-                yield f"data: {json.dumps({'type': 'content', 'md': f'## {sec_title}\n\n'})}\n\n"
+                md_content = f"## {sec_title}\n\n"
+                yield f"data: {json.dumps({'type': 'content', 'md': md_content})}\n\n"
                 continue
 
             target = int(chapter.get('words', 500))
@@ -300,10 +307,19 @@ class PaperAutoWriter:
             
             facts_context = ""
             if "摘要" not in sec_title and "结论" not in sec_title:
-                facts = self._research_phase(f"{title} - {sec_title}")
-                if facts:
-                    facts = TextCleaner.convert_cn_numbers(facts)
-                    facts_context = f"\n【真实事实】:\n{facts}"
+                if custom_data and len(custom_data.strip()) > 5:
+                    # 场景1: 用户提供了数据 -> 强制使用
+                    yield f"data: {json.dumps({'type': 'log', 'msg': f'   - 正在挂载用户提供的真实数据...'})}\n\n"
+                    # 对用户数据也做简单的全角转半角清洗
+                    cleaned_data = TextCleaner.convert_cn_numbers(custom_data)
+                    facts_context = f"\n【用户提供的真实数据 (最高优先级)】:\n{cleaned_data}\n\n请严格基于以上数据进行论述和分析。"
+                else:
+                    # 场景2: 用户未提供 -> 联网/知识库检索
+                    yield f"data: {json.dumps({'type': 'log', 'msg': f'   - 未检测到用户数据，正在检索网络/知识库数据...'})}\n\n"
+                    facts = self._research_phase(f"{title} - {sec_title}")
+                    if facts:
+                        facts = TextCleaner.convert_cn_numbers(facts)
+                        facts_context = f"\n【联网检索事实库】:\n{facts}"
 
             sys_prompt = get_academic_thesis_prompt(target, [r[1] for r in assigned_refs], sec_title, chapter_num)
             user_prompt = f"题目：{title}\n章节：{sec_title}\n前文：{context[-600:]}\n字数：{target}\n{facts_context}"
@@ -404,10 +420,10 @@ class PaperAutoWriter:
             context = final_content
             yield f"data: {json.dumps({'type': 'content', 'md': section_md})}\n\n"
 
-        if TASK_STATES.get(task_id) != "stopped":
+        if check_status_func() != "stopped":
             bib = ref_manager.generate_bibliography()
             full_content += bib
             yield f"data: {json.dumps({'type': 'content', 'md': bib})}\n\n"
             yield f"data: {json.dumps({'type': 'done'})}\n\n"
-        
-        if task_id in TASK_STATES: del TASK_STATES[task_id]
+        else:
+            yield f"data: {json.dumps({'type': 'log', 'msg': '🛑 任务已完全终止 (已跳过后续内容)'})}\n\n"

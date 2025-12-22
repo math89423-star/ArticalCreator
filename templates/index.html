@@ -3,15 +3,29 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AI 深度论文生成助手 (智能大纲版)</title>
+    <title>AI 深度论文生成助手 (多用户版)</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <style>
         body { background-color: #f4f6f9; font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; }
         .sidebar { background: white; padding: 25px; border-right: 1px solid #e0e0e0; height: 100vh; overflow-y: auto; display: flex; flex-direction: column; }
         .output-area { background: white; padding: 40px; min-height: 100vh; overflow-y: auto; position: relative;}
-        #logArea { font-size: 0.8rem; background: #212529; color: #00ff9d; padding: 15px; border-radius: 6px; font-family: monospace; height: 150px; overflow-y: auto; margin-top: auto; border: 1px solid #444;}
-        
+        #logArea { 
+            font-size: 0.85rem; 
+            background: #212529; 
+            color: #00ff9d; 
+            padding: 15px; 
+            border-radius: 6px; 
+            font-family: 'Consolas', 'Monaco', monospace; 
+            height: 300px; /* 默认高度增加 */
+            min-height: 150px;
+            max-height: 600px;
+            resize: vertical; /* 允许垂直拉伸 */
+            overflow-y: auto; 
+            margin-top: auto; 
+            border: 1px solid #444;
+            line-height: 1.5;
+        }
         .chapter-config-item { 
             background: #f8f9fa; border: 1px solid #dee2e6; padding: 10px; margin-bottom: 8px; border-radius: 6px; 
             display: flex; justify-content: space-between; align-items: center;
@@ -28,15 +42,60 @@
             padding: 10px 0; border-bottom: 1px solid #eee; display: flex; justify-content: space-between; align-items: center;
             backdrop-filter: blur(5px);
         }
+
+        /* 登录遮罩层 */
+        #loginOverlay {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.8); z-index: 9999;
+            display: flex; justify-content: center; align-items: center;
+        }
+        .login-box {
+            background: white; padding: 40px; border-radius: 10px; width: 400px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.3); text-align: center;
+        }
+        
+        /* 历史记录 */
+        .history-item {
+            padding: 8px; border-bottom: 1px solid #eee; cursor: pointer;
+            font-size: 0.85rem; color: #666;
+        }
+        .history-item:hover { background: #f8f9fa; color: #0d6efd; }
     </style>
 </head>
 <body>
 
-<div class="container-fluid g-0">
+<div id="loginOverlay">
+    <div class="login-box">
+        <h3 class="mb-4 fw-bold text-primary">🔐 欢迎使用论文助手</h3>
+        <p class="text-muted mb-4">请输入您的 User ID 以同步工作区</p>
+        <input type="text" id="userIdInput" class="form-control form-control-lg mb-3" placeholder="例如: user_123">
+        <button class="btn btn-primary w-100 btn-lg" onclick="handleLogin()">进入工作台</button>
+        <div class="mt-3 text-muted small">如果没有ID，系统将自动为您生成一个</div>
+    </div>
+</div>
+
+<div class="container-fluid g-0" id="mainApp" style="filter: blur(5px);">
     <div class="row g-0">
         <div class="col-md-4">
             <div class="sidebar">
-                <h5 class="mb-4 fw-bold text-primary"><i class="bi bi-gear-fill"></i> 论文配置工作台</h5>
+                <div class="d-flex justify-content-between align-items-center mb-4">
+                    <h5 class="fw-bold text-primary m-0"><i class="bi bi-gear-fill"></i> 论文配置</h5>
+                    <div class="dropdown">
+                        <button class="btn btn-outline-secondary btn-sm dropdown-toggle" type="button" data-bs-toggle="dropdown">
+                            👤 <span id="displayUserId">Guest</span>
+                        </button>
+                        <ul class="dropdown-menu">
+                            <li><a class="dropdown-item" href="#" onclick="showHistory()">📜 历史记录</a></li>
+                            <li><hr class="dropdown-divider"></li>
+                            <li><a class="dropdown-item text-danger" href="#" onclick="logout()">退出登录</a></li>
+                        </ul>
+                    </div>
+                </div>
+                <div class="d-grid gap-2 mb-3">
+                    <button type="button" class="btn btn-outline-success fw-bold" onclick="createNewPaper()">
+                        <i class="bi bi-plus-circle-fill"></i> ✨ 新建论文
+                    </button>
+                </div>
                 <form id="paperForm">
                     <div class="mb-3">
                         <label class="form-label fw-bold"><span class="step-badge">1</span>论文题目</label>
@@ -48,13 +107,12 @@
                             <span><span class="step-badge">2</span>完整大纲 (支持各种格式)</span>
                             <a href="#" class="text-decoration-none small" onclick="loadDemoOutline()">填入示例</a>
                         </label>
-                        <textarea class="form-control" id="outlineRaw" rows="12" placeholder="直接粘贴你的大纲，例如：&#10;第一章 绪论&#10;1.1 研究背景&#10;..." required oninput="parseOutline()"></textarea>
-                        <div class="form-text text-muted small">系统将自动识别父子层级，父标题不生成内容。</div>
+                        <textarea class="form-control" id="outlineRaw" rows="8" placeholder="粘贴大纲..." required oninput="parseOutline()"></textarea>
                     </div>
 
                     <div class="mb-3">
                         <label class="form-label fw-bold"><span class="step-badge">3</span>写作字数分配</label>
-                        <div id="chapterConfigArea" style="max-height: 250px; overflow-y: auto;">
+                        <div id="chapterConfigArea" style="max-height: 200px; overflow-y: auto;">
                             <div class="text-center text-muted small py-3">请输入大纲...</div>
                         </div>
                         <div class="text-end mt-1">
@@ -64,7 +122,12 @@
 
                     <div class="mb-3">
                         <label class="form-label fw-bold"><span class="step-badge">4</span>参考文献</label>
-                        <textarea class="form-control" id="references" rows="5" placeholder="请粘贴参考文献..."></textarea>
+                        <textarea class="form-control" id="references" rows="4" placeholder="粘贴参考文献..."></textarea>
+                    </div>
+
+                    <div class="mb-3">
+                        <label class="form-label fw-bold"><span class="step-badge">5</span>真实研究数据 (可选)</label>
+                        <textarea class="form-control" id="customData" rows="4" placeholder="粘贴实验数据/调查结果..."></textarea>
                     </div>
 
                     <button type="submit" id="btnSubmit" class="btn btn-primary w-100 fw-bold py-2">🚀 开始生成</button>
@@ -78,15 +141,16 @@
                 <div class="control-bar mb-4">
                     <h4 class="m-0 text-dark">📄 生成结果预览</h4>
                     <div id="controlButtons" style="display: none;">
+                        <button class="btn btn-outline-danger btn-sm me-2" onclick="clearResults()">🗑️ 清空内容</button>
                         <button class="btn btn-warning btn-sm me-2" id="btnPause" onclick="togglePause()">⏸ 暂停</button>
-                        <button class="btn btn-danger btn-sm me-2" onclick="stopTask()">⏹ 停止</button>
+                        <button class="btn btn-danger btn-sm me-2" id="btnStop" onclick="stopTask()">⏹ 停止</button>
                         <button class="btn btn-success btn-sm me-2" onclick="exportToMarkdown()">📥 导出 MD</button>
                         <button class="btn btn-primary btn-sm" onclick="exportToDocx()">📄 导出 Word (Docx)</button>
                     </div>
                 </div>
                 <div id="resultContent" class="markdown-body">
                     <div class="text-center text-muted mt-5 pt-5">
-                        <p style="font-size: 1.2rem;">💡 智能识别大纲层级，支持中文章节、阿拉伯数字等多种格式</p>
+                        <p style="font-size: 1.2rem;">💡 请先登录并配置论文信息</p>
                     </div>
                 </div>
             </div>
@@ -94,155 +158,309 @@
     </div>
 </div>
 
+<div class="modal fade" id="historyModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">📜 历史记录 (本地缓存)</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body" id="historyList">
+                </div>
+        </div>
+    </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 <script>
+    let currentUserId = null;
     let parsedStructure = []; 
     let fullMarkdownText = "";
     let currentTaskId = "";
     let isPaused = false;
 
+    // --- 1. 用户登录与鉴权逻辑 ---
+    window.onload = function() {
+        const storedUser = localStorage.getItem('paper_active_user');
+        if (storedUser) {
+            currentUserId = storedUser;
+            initWorkspace();
+        } else {
+            document.getElementById('loginOverlay').style.display = 'flex';
+        }
+    };
+
+    function appendLog(msg, type = 'info') {
+        const logArea = document.getElementById('logArea');
+        const time = new Date().toLocaleTimeString();
+        let color = '#00ff9d'; // 默认绿色
+        if (type === 'error') color = '#ff4d4d'; // 红色
+        if (type === 'warn') color = '#ffc107'; // 黄色
+        
+        logArea.innerHTML += `<div style="color:${color}; border-bottom:1px dashed #333; padding:2px 0;">[${time}] ${msg}</div>`;
+        logArea.scrollTop = logArea.scrollHeight;
+    }
+
+
+    function handleLogin() {
+        const inputId = document.getElementById('userIdInput').value.trim();
+        if (!inputId) {
+            // 自动生成
+            currentUserId = 'user_' + generateUUID().substring(0, 8);
+            alert("已为您生成新ID: " + currentUserId + "\n请妥善保管此ID以便下次访问！");
+        } else {
+            currentUserId = inputId;
+        }
+        localStorage.setItem('paper_active_user', currentUserId);
+        initWorkspace();
+    }
+
+    function initWorkspace() {
+        document.getElementById('loginOverlay').style.display = 'none';
+        document.getElementById('mainApp').style.filter = 'none';
+        document.getElementById('displayUserId').innerText = currentUserId;
+        
+        // 尝试加载上次未完成的草稿
+        loadDraft(currentUserId);
+    }
+
+    function logout() {
+        localStorage.removeItem('paper_active_user');
+        location.reload();
+    }
+
+    function createNewPaper() {
+        if (fullMarkdownText && fullMarkdownText.length > 50) {
+            if (!confirm("⚠️ 警告：当前已有生成的论文内容。\n\n新建将【清空】所有已输入的大纲、参考文献和生成结果。\n\n是否确认新建？")) {
+                return;
+            }
+        toggleInputs(false);
+        }
+        
+        // 1. 清空输入框
+        document.getElementById('paperTitle').value = "";
+        document.getElementById('outlineRaw').value = "";
+        document.getElementById('references').value = "";
+        document.getElementById('customData').value = "";
+        
+        // 2. 清空配置区和总字数
+        document.getElementById('chapterConfigArea').innerHTML = "<div class='text-center text-muted small py-3'>请输入大纲...</div>";
+        document.getElementById('totalWords').innerText = "0";
+        
+        // 3. 清空生成结果和日志
+        document.getElementById('resultContent').innerHTML = "<div class='text-center text-muted mt-5 pt-5'><p style='font-size: 1.2rem;'>💡 请配置并开始新论文</p></div>";
+        document.getElementById('logArea').innerText = "等待就绪...";
+        
+        // 4. 重置状态变量
+        fullMarkdownText = "";
+        currentTaskId = "";
+        parsedStructure = [];
+        
+        // 5. 隐藏控制按钮并启用开始按钮
+        document.getElementById('controlButtons').style.display = 'none';
+        document.getElementById('btnSubmit').disabled = false;
+        
+        // 6. 清除当前草稿缓存 (可选，保留历史记录但清空当前工作区)
+        if (currentUserId) {
+            localStorage.removeItem(`draft_${currentUserId}_current`);
+        }
+        
+        // 提示
+        appendLog("✨ 已重置工作台，请开始新创作。", 'info');
+    }
+
+    // --- 2. 数据持久化 (LocalStorage) ---
+    function saveDraft() {
+        if (!currentUserId) return;
+        const draft = {
+            title: document.getElementById('paperTitle').value,
+            outline: document.getElementById('outlineRaw').value,
+            refs: document.getElementById('references').value,
+            customData: document.getElementById('customData').value,
+            content: fullMarkdownText,
+            timestamp: new Date().toISOString()
+        };
+        // 保存当前草稿
+        localStorage.setItem(`draft_${currentUserId}_current`, JSON.stringify(draft));
+        
+        // 保存到历史记录列表 (简单实现：只存最新的5条)
+        let history = JSON.parse(localStorage.getItem(`history_${currentUserId}`) || "[]");
+        // 如果标题相同，更新；否则添加
+        const idx = history.findIndex(h => h.title === draft.title);
+        if (idx > -1) history[idx] = draft;
+        else history.unshift(draft);
+        
+        if(history.length > 5) history.pop();
+        localStorage.setItem(`history_${currentUserId}`, JSON.stringify(history));
+    }
+
+    function loadDraft(uid) {
+        const draftStr = localStorage.getItem(`draft_${uid}_current`);
+        if (draftStr) {
+            const draft = JSON.parse(draftStr);
+            document.getElementById('paperTitle').value = draft.title || "";
+            document.getElementById('outlineRaw').value = draft.outline || "";
+            document.getElementById('references').value = draft.refs || "";
+            document.getElementById('customData').value = draft.customData || "";
+            
+            parseOutline(); // 重新解析大纲UI
+            
+            // 【修改】如果存在已生成的正文内容，恢复界面并锁定输入
+            if (draft.content && draft.content.trim().length > 0) {
+                fullMarkdownText = draft.content;
+                document.getElementById('resultContent').innerHTML = marked.parse(fullMarkdownText);
+                document.getElementById('controlButtons').style.display = 'block';
+                
+                // 有内容就锁定
+                toggleInputs(true);
+                // 确保按钮是暂停/继续状态而不是初始状态
+                document.getElementById('btnSubmit').disabled = true;
+            } else {
+                // 没有正文内容（可能只是填了表单没生成），则解锁
+                toggleInputs(false);
+            }
+        }
+    }
+
+    function showHistory() {
+        const listEl = document.getElementById('historyList');
+        listEl.innerHTML = "";
+        const history = JSON.parse(localStorage.getItem(`history_${currentUserId}`) || "[]");
+        
+        if(history.length === 0) {
+            listEl.innerHTML = "<div class='text-center text-muted'>暂无历史记录</div>";
+        } else {
+            history.forEach(item => {
+                const div = document.createElement('div');
+                div.className = 'history-item';
+                div.innerHTML = `<strong>${item.title || '无标题'}</strong> <br><small>${new Date(item.timestamp).toLocaleString()}</small>`;
+                div.onclick = () => {
+                    if(confirm("加载此历史记录将覆盖当前内容，确定吗？")) {
+                        fullMarkdownText = item.content || "";
+                        document.getElementById('resultContent').innerHTML = marked.parse(fullMarkdownText);
+                        document.getElementById('paperTitle').value = item.title;
+                        document.getElementById('outlineRaw').value = item.outline;
+                        document.getElementById('references').value = item.refs;
+                        parseOutline();
+                        const modal = bootstrap.Modal.getInstance(document.getElementById('historyModal'));
+                        modal.hide();
+                    }
+                };
+                listEl.appendChild(div);
+            });
+        }
+        new bootstrap.Modal(document.getElementById('historyModal')).show();
+    }
+
+    // --- 3. 增强 Fetch (带 User-ID) ---
+    async function authenticatedFetch(url, options = {}) {
+        if (!options.headers) options.headers = {};
+        if (!(options.body instanceof FormData)) {
+            options.headers['Content-Type'] = 'application/json';
+        }
+        // 核心：所有请求带上 User-ID
+        options.headers['X-User-ID'] = currentUserId;
+        return fetch(url, options);
+    }
+
+    // --- 工具函数 ---
     function generateUUID() {
         return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => (c === 'x' ? Math.random() * 16 | 0 : (Math.random() * 16 | 0) & 0x3 | 0x8).toString(16));
     }
 
+    function toggleInputs(shouldDisable) {
+        // 1. 锁定主要文本域
+        const ids = ['paperTitle', 'outlineRaw', 'references', 'customData'];
+        ids.forEach(id => {
+            const el = document.getElementById(id);
+            if (el) el.disabled = shouldDisable;
+        });
+
+        // 2. 锁定动态生成的字数输入框
+        const wordInputs = document.querySelectorAll('.word-input');
+        wordInputs.forEach(input => input.disabled = shouldDisable);
+
+        // 3. 锁定"填入示例"链接，防止误点
+        const demoLink = document.querySelector('a[onclick="loadDemoOutline()"]');
+        if (demoLink) {
+            demoLink.style.pointerEvents = shouldDisable ? 'none' : 'auto';
+            demoLink.style.opacity = shouldDisable ? '0.5' : '1';
+            demoLink.style.cursor = shouldDisable ? 'not-allowed' : 'pointer';
+        }
+    }
+
     function loadDemoOutline() {
-        document.getElementById('outlineRaw').value = `摘要
-第一章 绪论
-1.1 研究背景及意义
-1.2 国内外研究现状
-1.2.1 国外研究现状
-1.2.2 国内研究现状
-1.3 主要研究内容
-第二章 相关理论基础
-2.1 深度学习理论
-2.2 神经网络模型
-第三章 核心算法设计
-3.1 数据预处理
-3.2 模型架构
-第四章 实验与分析
-第五章 总结与展望
-参考文献`;
+        document.getElementById('outlineRaw').value = `摘要\n第一章 绪论\n1.1 研究背景\n1.2 研究意义\n第二章 核心理论\n第三章 总结\n参考文献`;
         parseOutline();
     }
 
-    // --- 核心：智能层级解析算法 ---
+    // 智能层级解析 (保持不变，略微精简展示)
     function parseOutline() {
         const text = document.getElementById('outlineRaw').value;
-        const lines = text.split('\n'); // 不先 trim，保留缩进信息以备用
-        
-        // 1. 预处理行：计算层级 (Level)
+        const lines = text.split('\n');
         let processedLines = [];
+        
         lines.forEach(line => {
             const trimmed = line.trim();
             if(!trimmed) return;
-            
             const level = getLineLevel(trimmed, line);
-            processedLines.push({
-                text: trimmed,
-                level: level,
-                isParent: false // 默认为 false，后续计算
-            });
+            processedLines.push({ text: trimmed, level: level, isParent: false });
         });
 
-        // 2. 识别父子关系：如果下一行的 level > 当前行 level，则当前行为父节点
         for (let i = 0; i < processedLines.length - 1; i++) {
-            if (processedLines[i+1].level > processedLines[i].level) {
-                processedLines[i].isParent = true;
-            }
+            if (processedLines[i+1].level > processedLines[i].level) processedLines[i].isParent = true;
         }
 
-        // 3. 分组构建 UI 结构
         parsedStructure = [];
         let currentMainGroup = null;
 
         processedLines.forEach(item => {
-            // Level 1 (第一章/1.) 或 特殊章节 (摘要/结论) 视为顶级分组
-            const isTopLevel = item.level === 1 || ["摘要", "Abstract", "参考文献", "致谢", "结论", "总结"].some(k => item.text.includes(k) && item.text.length < 10);
-            
+            const isTopLevel = item.level === 1 || ["摘要", "Abstract", "参考文献"].some(k => item.text.includes(k));
             if (isTopLevel) {
-                currentMainGroup = { 
-                    title: item.text, 
-                    children: [], 
-                    defaultWords: 1000 
-                };
-                // 如果顶级章节本身不是父节点（即它下面没有小标题），它自己也要写内容
-                // 但为了统一，我们把顶级章节也作为一行加入 children
-                currentMainGroup.children.push(item);
+                currentMainGroup = { title: item.text, children: [item] };
                 parsedStructure.push(currentMainGroup);
             } else {
                 if (!currentMainGroup) {
-                    // 处理开头没有顶级章节的情况（如直接开始写 1.1）
-                    currentMainGroup = { title: "前言/其他", children: [], defaultWords: 500 };
+                    currentMainGroup = { title: "前言", children: [] };
                     parsedStructure.push(currentMainGroup);
                 }
                 currentMainGroup.children.push(item);
             }
         });
-        
         renderConfigArea();
     }
 
-    // --- 智能层级判断函数 ---
     function getLineLevel(text, rawLine) {
-        // 策略 1: 关键字匹配 (Level 1)
         if (/^第[一二三四五六七八九十]+[章|部分]/.test(text)) return 1;
-        if (/^Chapter\s+\d+/i.test(text)) return 1;
-        if (/^(摘要|Abstract|参考文献|致谢|结论|总结与展望)/.test(text)) return 1;
-
-        // 策略 2: 数字编号匹配 (1.1.1)
-        const match = text.match(/^(\d+(\.\d+)*)/);
-        if (match) {
-            const parts = match[1].split('.').filter(p => p); // 过滤掉空串
-            // "1" -> level 1, "1.1" -> level 2, "1.1.1" -> level 3
-            return parts.length; 
+        if (/^(摘要|Abstract|参考文献)/.test(text)) return 1;
+        if (/^(\d+(\.\d+)*)/.test(text)) {
+            return text.match(/^(\d+(\.\d+)*)/)[1].split('.').length; 
         }
-
-        // 策略 3: 中文小标题匹配 (一、 (一) 1、)
-        if (/^[一二三四五六七八九十]+、/.test(text)) return 2;
-        if (/^（[一二三四五六七八九十]+）/.test(text)) return 3;
-        
-        // 策略 4: 缩进检测 (如果没有明显编号，靠缩进)
-        const leadingSpaces = rawLine.match(/^\s*/)[0].length;
-        if (leadingSpaces >= 4) return 3;
-        if (leadingSpaces >= 2) return 2;
-
-        return 2; // 默认作为二级标题
+        return 2; 
     }
 
     function renderConfigArea() {
         const container = document.getElementById('chapterConfigArea');
         container.innerHTML = '';
         let totalWords = 0;
-
         parsedStructure.forEach((group, index) => {
-            // 计算这个大组里有多少个“叶子节点”（即实际需要写字的章节）
-            // 排除掉所有 isParent=true 的节点
             const leafCount = group.children.filter(c => !c.isParent).length;
-            
-            // 智能预设字数
             let w = 1000;
-            if (group.title.includes("摘要") || group.title.includes("Abstract")) w = 350;
-            else if (group.title.includes("参考文献")) w = 0; // 参考文献不分配生成字数
+            if (group.title.includes("摘要")) w = 350;
+            else if (group.title.includes("参考文献")) w = 0;
             else if (leafCount > 3) w = leafCount * 400; 
-            
             if (w > 0) totalWords += w;
 
-            // 只有需要写字的章节才显示配置
             if (w > 0 || leafCount > 0) {
                 const div = document.createElement('div');
                 div.className = 'chapter-config-item';
                 div.innerHTML = `
-                    <div>
-                        <div class="label" title="${group.title}">${group.title}</div>
-                        <div class="sub-count">
-                            <span class="badge bg-secondary" style="font-size:0.6rem">${leafCount} 个写作点</span>
-                        </div>
-                    </div>
+                    <div><div class="label">${group.title}</div></div>
                     <div class="d-flex align-items-center">
                         <input type="number" class="form-control form-control-sm word-input" 
                                data-idx="${index}" value="${w}" step="50" min="0" onchange="recalcTotal()">
                         <span class="ms-1 small text-muted">字</span>
-                    </div>
-                `;
+                    </div>`;
                 container.appendChild(div);
             }
         });
@@ -255,28 +473,51 @@
         document.getElementById('totalWords').innerText = total;
     }
 
-    // --- 提交逻辑 ---
+    function escapeRegExp(string) {
+        return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); 
+    }
+
     document.getElementById('paperForm').onsubmit = async (e) => {
         e.preventDefault();
+        saveDraft(); // 先保存一下当前状态
+        
+        // --- 1. 断点续传判断 ---
+        let isResuming = false;
+        let existingContext = "";
+        
+        // 如果文本框里已经有较多内容，询问用户意图
+        if (fullMarkdownText && fullMarkdownText.trim().length > 50) {
+            const userChoice = confirm(
+                "检测到您有已生成的论文内容。\n\n" +
+                "【确定】：继续生成（跳过已存在的章节，从末尾继续）\n" +
+                "【取消】：清空重写（删除所有内容，从头开始）"
+            );
+            
+            if (userChoice) {
+                isResuming = true;
+                // 截取最后 3000 字作为上下文发给 AI，保证逻辑连贯
+                existingContext = fullMarkdownText.slice(-3000);
+            } else {
+                fullMarkdownText = ""; // 清空
+                document.getElementById('resultContent').innerHTML = "";
+            }
+        } else {
+            fullMarkdownText = "";
+            document.getElementById('resultContent').innerHTML = "";
+        }
+
         currentTaskId = generateUUID();
         isPaused = false;
         
-        const inputs = document.querySelectorAll('.word-input');
+        // --- 2. 构建完整任务列表 ---
         const flatTasks = [];
-
-        // 遍历UI上的大组
         parsedStructure.forEach((group, index) => {
-            let totalAssigned = 0;
-            const inputEl = document.querySelector(`.word-input[data-idx="${index}"]`);
-            if (inputEl) totalAssigned = parseInt(inputEl.value) || 0;
-
+            let totalAssigned = parseInt(document.querySelector(`.word-input[data-idx="${index}"]`)?.value || 0);
             const leafNodes = group.children.filter(c => !c.isParent);
-            const leafCount = leafNodes.length;
-            const perWord = leafCount > 0 ? Math.floor(totalAssigned / leafCount) : 0;
+            const perWord = leafNodes.length > 0 ? Math.floor(totalAssigned / leafNodes.length) : 0;
 
             group.children.forEach(child => {
                 if (child.text.includes("参考文献") && child.level === 1) return;
-
                 flatTasks.push({
                     title: child.text,
                     is_parent: child.isParent, 
@@ -285,54 +526,93 @@
             });
         });
 
+        // --- 3. 过滤出需要生成的任务 ---
+        let tasksToSend = flatTasks;
+        if (isResuming) {
+            tasksToSend = flatTasks.filter(task => {
+                // 检查正文中是否已经存在该章节的标题 (例如 "## 1.1 研究背景")
+                // 使用正则进行模糊匹配，忽略 # 数量和空格
+                const headerPattern = new RegExp(`#{1,3}\\s*${escapeRegExp(task.title)}`, 'i');
+                const isAlreadyGenerated = headerPattern.test(fullMarkdownText);
+                return !isAlreadyGenerated; // 如果没找到标题，说明需要生成
+            });
+
+            if (tasksToSend.length === 0) {
+                alert("根据当前内容判断，所有章节均已生成完毕！\n\n如果您想重写某章节，请在右侧预览区【手动删除】该章节的标题和正文，然后再点开始。");
+                return;
+            }
+            document.getElementById('logArea').innerHTML += `<div class="text-warning">> 🔄 恢复模式：智能跳过 ${flatTasks.length - tasksToSend.length} 个已完成章节...</div>`;
+        } else {
+            document.getElementById('logArea').innerHTML = "<div>> 🚀 开始新任务...</div>";
+        }
+
         const btn = document.getElementById('btnSubmit');
         const logArea = document.getElementById('logArea');
         const resultDiv = document.getElementById('resultContent');
         const ctrlDiv = document.getElementById('controlButtons');
         
         btn.disabled = true;
-        // 关键修复：立即显示控制按钮
         ctrlDiv.style.display = 'block';
         document.getElementById('btnPause').innerText = "⏸ 暂停";
-        resultDiv.innerHTML = "";
-        fullMarkdownText = "";
-        
+        toggleInputs(true);
+        appendLog("🔒 已锁定配置信息，生成结束后可解锁。", 'info');
         const formData = new FormData();
         formData.append('title', document.getElementById('paperTitle').value);
         formData.append('references', document.getElementById('references').value);
-        formData.append('chapter_data', JSON.stringify(flatTasks));
+        formData.append('custom_data', document.getElementById('customData').value);
+        formData.append('chapter_data', JSON.stringify(tasksToSend)); // 只发送剩下的任务
         formData.append('task_id', currentTaskId);
+        // 【新增】发送上下文，让AI知道前面写了什么
+        formData.append('initial_context', existingContext); 
 
         try {
-            const response = await fetch('/generate', { method: 'POST', body: formData });
+            // 使用鉴权 fetch
+            const response = await authenticatedFetch('/generate', { method: 'POST', body: formData });
             const reader = response.body.getReader();
             const decoder = new TextDecoder();
+            let buffer = '';
 
             while (true) {
+                // 【修复点 1】必须先从流中读取数据
                 const { done, value } = await reader.read();
                 if (done) break;
-                const chunk = decoder.decode(value);
-                const lines = chunk.split('\n\n');
+                
+                // 【修复点 2】解码并拼接到缓冲区
+                buffer += decoder.decode(value, { stream: true });
+                
+                // 【修复点 3】按双换行符切割数据包
+                const lines = buffer.split('\n\n');
+                
+                // 【修复点 4】保留最后一个可能不完整的包，留待下次拼接
+                buffer = lines.pop();
+
+                // 现在 lines 变量已定义，可以遍历了
                 for (const line of lines) {
-                    if (line.startsWith('data: ')) {
+                    const trimmed = line.trim();
+                    if (trimmed.startsWith('data: ')) {
                         try {
-                            const data = JSON.parse(line.replace('data: ', ''));
-                            if (data.type === 'log') logArea.innerHTML += `<div>> ${data.msg}</div>`;
-                            else if (data.type === 'content') {
+                            const data = JSON.parse(trimmed.replace('data: ', ''));
+                            if (data.type === 'log') {
+                                appendLog(data.msg); 
+                            } else if (data.type === 'content') {
                                 fullMarkdownText += data.md;
                                 resultDiv.innerHTML = marked.parse(fullMarkdownText);
-                            }
-                            else if (data.type === 'done') {
+                                saveDraft(); 
+                            } else if (data.type === 'done') {
                                 btn.disabled = false;
-                                // 任务完成时保持显示，方便导出
-                                ctrlDiv.style.display = 'block';
+                                saveDraft();
+                                appendLog("🎉 论文生成全部完成！", 'info'); 
+                                alert("生成完成！");
                             }
                             logArea.scrollTop = logArea.scrollHeight;
-                        } catch (e) {}
+                        } catch (e) {
+                            console.warn("JSON解析跳过:", e);
+                        }
                     }
                 }
             }
         } catch (err) {
+            appendLog("❌ 网络或服务器异常: " + err, 'error');
             alert("Error: " + err);
             btn.disabled = false;
         }
@@ -341,19 +621,41 @@
     async function togglePause() { 
         const btn = document.getElementById('btnPause');
         const action = isPaused ? 'resume' : 'pause';
-        await fetch('/control', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ task_id: currentTaskId, action: action })});
-        isPaused = !isPaused;
-        btn.innerText = isPaused ? "▶ 继续" : "⏸ 暂停";
-        btn.className = isPaused ? "btn btn-info btn-sm me-2" : "btn btn-warning btn-sm me-2";
-    }
-    async function stopTask() { 
-        if(!confirm("确定停止？")) return;
-        await fetch('/control', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ task_id: currentTaskId, action: 'stop' })});
-        document.getElementById('btnSubmit').disabled = false;
-        // 停止后也保留显示，也许用户想导出已生成的部分
-        // document.getElementById('controlButtons').style.display = 'none'; 
+        
+        // 【新增】日志输出
+        appendLog(isPaused ? "▶ 用户点击继续任务..." : "⏸ 用户点击暂停任务...", 'warn');
+        
+        try {
+            await authenticatedFetch('/control', {
+                method: 'POST', 
+                body: JSON.stringify({ task_id: currentTaskId, action: action })
+            });
+            isPaused = !isPaused;
+            btn.innerText = isPaused ? "▶ 继续" : "⏸ 暂停";
+            btn.className = isPaused ? "btn btn-info btn-sm me-2" : "btn btn-warning btn-sm me-2";
+            
+            // 【新增】确认日志
+            appendLog(isPaused ? "✅ 任务已暂停" : "✅ 任务已恢复执行");
+        } catch (e) {
+            appendLog("❌ 操作失败: " + e, 'error');
+        }
     }
     
+    async function stopTask() { 
+        if(!confirm("确定停止？")) return;
+        appendLog("⏹ 用户请求停止任务...", 'error');
+        try {
+            await authenticatedFetch('/control', {
+                method: 'POST', 
+                body: JSON.stringify({ task_id: currentTaskId, action: 'stop' })
+            });
+            document.getElementById('btnSubmit').disabled = false;
+            appendLog("✅ 任务已终止");
+        } catch (e) {
+            appendLog("❌ 停止失败: " + e, 'error');
+        }
+    }
+
     function exportToMarkdown() {
         if(!fullMarkdownText) return;
         const blob = new Blob([fullMarkdownText], { type: 'text/markdown' });
@@ -364,32 +666,52 @@
     }
 
     async function exportToDocx() {
-        if(!fullMarkdownText) {
-            alert("没有可导出的内容！");
-            return;
-        }
-        
+        if(!fullMarkdownText) { alert("没有内容！"); return; }
         try {
-            const response = await fetch('/export_docx', {
+            const response = await authenticatedFetch('/export_docx', {
                 method: 'POST',
-                headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({ content: fullMarkdownText })
             });
-            
             if (response.ok) {
                 const blob = await response.blob();
                 const url = window.URL.createObjectURL(blob);
                 const a = document.createElement('a');
                 a.href = url;
-                a.download = document.getElementById('paperTitle').value + "_论文.docx" || 'thesis_result.docx';
+                a.download = (document.getElementById('paperTitle').value || 'thesis') + ".docx";
                 document.body.appendChild(a);
                 a.click();
                 a.remove();
-            } else {
-                alert("导出失败");
-            }
-        } catch (e) {
-            alert("导出错误: " + e);
+            } else alert("导出失败");
+        } catch (e) { alert("导出错误: " + e); }
+    }
+
+    function clearResults() {
+        // 1. 如果没有内容，也给个提示，防止用户以为按钮坏了
+        if (!fullMarkdownText && document.getElementById('resultContent').innerText.includes("请先登录")) {
+            alert("当前没有可清空的内容。");
+            return;
+        }
+
+        // 2. 弹出确认框
+        if (!confirm("确定要清空当前生成的所有正文内容吗？\n(您的论文配置和大纲将保留，且可以重新编辑)")) return;
+        
+        // 3. 执行清空操作
+        fullMarkdownText = "";
+        document.getElementById('resultContent').innerHTML = "<div class='text-center text-muted mt-5 pt-5'><p style='font-size: 1.2rem;'>💡 内容已清空，请重新开始</p></div>";
+        
+        // 4. 隐藏控制栏，重置开始按钮
+        document.getElementById('controlButtons').style.display = 'none';
+        document.getElementById('btnSubmit').disabled = false;
+        // 【新增】内容清空后，解锁输入框，允许用户修改
+        toggleInputs(false);
+        
+        // 5. 同步清除缓存 (防止刷新后内容又回来了)
+        if (typeof saveDraft === 'function') {
+            saveDraft(); 
+        }
+        // 6. 记录日志
+        if (typeof appendLog === 'function') {
+            appendLog("🗑️ 用户手动清空了生成内容", 'warn');
         }
     }
 </script>

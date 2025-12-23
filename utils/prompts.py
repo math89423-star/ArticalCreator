@@ -261,8 +261,6 @@ def get_academic_thesis_prompt(target_words: int, ref_content_list: List[str], c
 请开始写作。
 """
 
-
-
 class PaperAutoWriter:
     def __init__(self, api_key: str, base_url: str, model: str):
         self.client = OpenAI(api_key=api_key, base_url=base_url)
@@ -302,6 +300,151 @@ class PaperAutoWriter:
             return cn_map.get(match_cn.group(1), "")
         return ""
 
+    def _check_process_status(self, check_status_func) -> bool:
+        """检查任务状态：处理暂停，返回是否停止"""
+        while check_status_func() == "paused":
+            time.sleep(1)
+        return check_status_func() == "stopped"
+
+    def _determine_header_prefix(self, chapter: Dict, sec_title: str) -> str:
+        """计算 Markdown 标题层级前缀 (##, ###, etc.)"""
+        header_level = 2
+        # 如果前端传递了层级，直接使用
+        if 'level' in chapter:
+            header_level = int(chapter['level']) + 1
+        else:
+            # 兼容旧逻辑：根据点号智能猜测
+            parts = sec_title.split('.')
+            if len(parts) >= 3: header_level = 4
+            elif len(parts) == 2: header_level = 3
+            else: header_level = 3 # 默认小节是三级
+        
+        # 限制层级范围
+        header_level = min(max(header_level, 2), 6)
+        return "#" * header_level
+
+    def _get_facts_context(self, chapter: Dict, title: str, sec_title: str, custom_data: str) -> Generator[str, None, str]:
+        """获取事实数据上下文 (Yields logs, returns context string)"""
+        facts_context = ""
+        use_data_flag = chapter.get('use_data', False)
+
+        # 仅对非摘要、非结论章节启用数据挂载
+        if "摘要" not in sec_title and "结论" not in sec_title:
+            # 场景1：开关开启 且 有用户数据 -> 挂载用户数据
+            if use_data_flag and custom_data and len(custom_data.strip()) > 5:
+                yield json.dumps({'type': 'log', 'msg': f'   - [已启用] 挂载用户真实数据...'})
+                cleaned_data = TextCleaner.convert_cn_numbers(custom_data)
+                facts_context = f"\n【用户提供的真实数据 (最高优先级)】:\n{cleaned_data}\n\n请严格基于以上数据进行论述和分析。"
+            
+            # 场景2：开关开启 但 无用户数据 -> 尝试联网
+            elif use_data_flag:
+                yield json.dumps({'type': 'log', 'msg': f'   - [已启用] 正在检索网络数据...'})
+                facts = self._research_phase(f"{title} - {sec_title}")
+                if facts:
+                    facts = TextCleaner.convert_cn_numbers(facts)
+                    facts_context = f"\n【联网检索事实库】:\n{facts}"
+            
+            # 场景3：开关关闭 -> pass
+        
+        return facts_context
+
+    def _refine_content(self, raw_content: str, target: int, sec_title: str, sys_prompt: str, user_prompt: str) -> Generator[str, None, str]:
+        """智能扩写/精简逻辑 (Yields logs, returns refined content)"""
+        current_len = len(re.sub(r'\s', '', raw_content))
+        
+        # 摘要章节不进行字数优化
+        if "摘要" not in sec_title and "Abstract" not in sec_title:
+            # 扩写逻辑
+            if current_len < target * 0.6:
+                yield json.dumps({'type': 'log', 'msg': f'   - 字数优化: 正在扩充内容 ({current_len}/{target})...'})
+                expand_prompt = (
+                    f"当前字数({current_len})与目标({target})差距较大。\n"
+                    f"请**扩写**上述内容。红线要求：\n"
+                    f"1. **严禁**删除原文中的任何 `[REF]` 引用标记。\n"
+                    f"2. 增加具体案例、理论分析或数据对比。\n"
+                    f"3. **严禁**输出“好的”、“扩写如下”等废话，直接输出扩写后的正文。\n"
+                )
+                try:
+                    resp = self.client.chat.completions.create(
+                        model=self.model,
+                        messages=[
+                            {"role": "system", "content": sys_prompt},
+                            {"role": "user", "content": user_prompt},
+                            {"role": "assistant", "content": raw_content},
+                            {"role": "user", "content": expand_prompt}
+                        ],
+                        temperature=0.7
+                    )
+                    return resp.choices[0].message.content.strip()
+                except Exception as e:
+                    print(f"扩写失败: {e}")
+            
+            # 精简逻辑
+            elif current_len > target * 1.4:
+                yield json.dumps({'type': 'log', 'msg': f'   - 字数优化: 正在精简内容 ({current_len}/{target})...'})
+                condense_prompt = (
+                    f"当前字数({current_len})远超目标({target})。\n"
+                    f"请**精简**上述内容。红线要求：\n"
+                    f"1. **必须保留所有 `[REF]` 引用标记**，绝对不能删减参考文献。\n"
+                    f"2. 删除重复的形容词，保留核心论点。\n"
+                    f"3. **严禁**输出“好的”等废话，直接输出结果。\n"
+                )
+                try:
+                    resp = self.client.chat.completions.create(
+                        model=self.model,
+                        messages=[
+                            {"role": "system", "content": sys_prompt},
+                            {"role": "user", "content": user_prompt},
+                            {"role": "assistant", "content": raw_content},
+                            {"role": "user", "content": condense_prompt}
+                        ],
+                        temperature=0.7
+                    )
+                    return resp.choices[0].message.content.strip()
+                except Exception as e:
+                    print(f"精简失败: {e}")
+        
+        return raw_content
+
+    def _clean_and_format(self, raw_content: str, sec_title: str, ref_manager) -> str:
+        """清洗、引用处理、格式化"""
+        # 1. 摘要标题清洗
+        if "摘要" in sec_title or "Abstract" in sec_title:
+            raw_content = re.sub(r'^#+\s*(摘要|Abstract)\s*', '', raw_content, flags=re.IGNORECASE).strip()
+            if raw_content.startswith("摘要") and len(raw_content) < 10:
+                raw_content = raw_content[2:].strip()
+            if raw_content.startswith("Abstract") and len(raw_content) < 15:
+                raw_content = raw_content[8:].strip()
+
+        # 2. 通用标题重复清洗 (正文第一行如果是标题则去除)
+        temp_lines = raw_content.strip().split('\n')
+        if temp_lines:
+            first_line_core = re.sub(r'[#*\s]', '', temp_lines[0])
+            title_core = re.sub(r'[#*\s]', '', sec_title)
+            if title_core in first_line_core and len(first_line_core) < len(title_core) + 8:
+                raw_content = '\n'.join(temp_lines[1:])
+
+        # 3. 引用处理
+        processed_content = ref_manager.process_text_deterministic(raw_content)
+        processed_content = TextCleaner.convert_cn_numbers(processed_content)
+
+        # 4. 段落缩进格式化
+        lines = processed_content.split('\n')
+        formatted_lines = []
+        for line in lines:
+            line = line.strip()
+            # 移除幻觉空格文字
+            line = re.sub(r'^[\(（]空两格[\)）]', '', line) 
+            line = re.sub(r'^空格', '', line)
+            
+            # 排除不需要缩进的行 (缩进、标题、表格、代码块)
+            if (line and not line.startswith('　　') and not line.startswith('#') and 
+                not line.startswith('|') and not line.startswith('```') and "import" not in line and "plt." not in line):
+                line = '　　' + line 
+            formatted_lines.append(line)
+        
+        return '\n\n'.join(formatted_lines)
+
     def generate_stream(self, task_id: str, title: str, chapters: List[Dict], references_raw: str, custom_data: str, check_status_func, initial_context: str = "") -> Generator[str, None, None]:
         ref_manager = ReferenceManager(references_raw)
         yield f"data: {json.dumps({'type': 'log', 'msg': '初始化...'})}\n\n"
@@ -311,157 +454,74 @@ class PaperAutoWriter:
         context = initial_context if initial_context else "论文开头"
         
         for i, chapter in enumerate(chapters):
-            while check_status_func() == "paused":
-                time.sleep(1)
-            if check_status_func() == "stopped": 
+            # 1. 状态检查 (暂停/停止)
+            if self._check_process_status(check_status_func):
                 yield f"data: {json.dumps({'type': 'log', 'msg': '⚠️ 收到停止指令，正在中断...'})}\n\n"
                 break
             
             sec_title = chapter['title']
-            if chapter.get('is_parent', False):
-                full_content += f"## {sec_title}\n\n"
-                md_content = f'## {sec_title}\n\n'
-                yield f"data: {json.dumps({'type': 'content', 'md': md_content})}\n\n"
-                continue
-
+            
+            # 2. 标题层级处理
+            header_prefix = self._determine_header_prefix(chapter, sec_title)
+            
+            # 3. 仅标题处理 (父节点 或 字数<=0)
             target = int(chapter.get('words', 500))
-            if target <= 0:
-                # 生成三级标题 (或者根据层级调整，这里默认写作点是三级或正文段落标题)
-                # 如果不需要标题，可以直接 continue，但通常大纲里有的都需要显示
-                header_md = f"### {sec_title}\n\n" 
+            is_parent = chapter.get('is_parent', False)
+            
+            if is_parent or target <= 0:
+                header_md = f"{header_prefix} {sec_title}\n\n" 
                 full_content += header_md
                 yield f"data: {json.dumps({'type': 'content', 'md': header_md})}\n\n"
-                yield f"data: {json.dumps({'type': 'log', 'msg': f'跳过生成: {sec_title} (字数设为0)'})}\n\n"
+                if not is_parent: # 如果是写作点但字数为0，记录日志
+                    yield f"data: {json.dumps({'type': 'log', 'msg': f'生成标题: {sec_title} (跳过正文)'})}\n\n"
                 continue
+
+            # 4. 上下文与引用准备
             assigned_refs = chapter_ref_map.get(i, [])
             ref_manager.set_current_chapter_refs(assigned_refs)
             chapter_num = self._extract_chapter_num(sec_title)
             yield f"data: {json.dumps({'type': 'log', 'msg': f'正在撰写: {sec_title}'})}\n\n"
 
+            # 5. 获取数据上下文 (Generator 迭代)
             facts_context = ""
-            use_data_flag = chapter.get('use_data', False) # 获取前端传来的开关状态
+            fact_gen = self._get_facts_context(chapter, title, sec_title, custom_data)
+            try:
+                while True:
+                    val = next(fact_gen)
+                    yield f"data: {val}\n\n"
+            except StopIteration as e:
+                facts_context = e.value
 
-            if "摘要" not in sec_title and "结论" not in sec_title:
-                # 只有当开关开启，且确实有数据时，才挂载
-                if use_data_flag and custom_data and len(custom_data.strip()) > 5:
-                    yield f"data: {json.dumps({'type': 'log', 'msg': f'   - [已启用] 挂载用户真实数据...'})}\n\n"
-                    cleaned_data = TextCleaner.convert_cn_numbers(custom_data)
-                    facts_context = f"\n【用户提供的真实数据 (最高优先级)】:\n{cleaned_data}\n\n请严格基于以上数据进行论述和分析。"
-                elif use_data_flag:
-                    # 开关开启但没数据，尝试联网（可选逻辑）
-                    yield f"data: {json.dumps({'type': 'log', 'msg': f'   - [已启用] 正在检索网络数据...'})}\n\n"
-                    facts = self._research_phase(f"{title} - {sec_title}")
-                    if facts:
-                        facts = TextCleaner.convert_cn_numbers(facts)
-                        facts_context = f"\n【联网检索事实库】:\n{facts}"
-                else:
-                    # 开关关闭
-                    # yield f"data: {json.dumps({'type': 'log', 'msg': f'   - [未启用] 使用通用知识生成...'})}\n\n"
-                    pass
-
-            # 1. 构建 Prompt
+            # 6. 构建 Prompt
             if "摘要" in sec_title or "Abstract" in sec_title:
                 sys_prompt = get_academic_thesis_prompt(target, [r[1] for r in assigned_refs], sec_title, chapter_num)
                 user_prompt = f"题目：{title}\n章节：{sec_title}\n要求：请直接输出摘要的正文内容，严禁输出“### 摘要”或“### Abstract”等标题。请严格按照“摘要正文 + 关键词”的格式输出。"
             else:
                 sys_prompt = get_academic_thesis_prompt(target, [r[1] for r in assigned_refs], sec_title, chapter_num)
                 user_prompt = f"题目：{title}\n章节：{sec_title}\n前文：{context[-600:]}\n字数：{target}\n{facts_context}"
-            
-            # 2. 调用 LLM
+
+            # 7. 调用 LLM
             raw_content = self._call_llm(sys_prompt, user_prompt)
 
-            # 3. 智能字数扩写/精简 (仅对非摘要章节)
-            current_len = len(re.sub(r'\s', '', raw_content))
-            if "摘要" not in sec_title and "Abstract" not in sec_title:
-                if current_len < target * 0.6: 
-                    yield f"data: {json.dumps({'type': 'log', 'msg': f'   - 字数优化: 正在扩充内容 ({current_len}/{target})...'})}\n\n"
-                    expand_prompt = (
-                        f"当前字数({current_len})与目标({target})差距较大。\n"
-                        f"请**扩写**上述内容。红线要求：\n"
-                        f"1. **严禁**删除原文中的任何 `[REF]` 引用标记。\n"
-                        f"2. 增加具体案例、理论分析或数据对比。\n"
-                        f"3. **严禁**输出“好的”、“扩写如下”等废话，直接输出扩写后的正文。\n"
-                    )
-                    try:
-                        resp = self.client.chat.completions.create(
-                            model=self.model,
-                            messages=[
-                                {"role": "system", "content": sys_prompt},
-                                {"role": "user", "content": user_prompt},
-                                {"role": "assistant", "content": raw_content},
-                                {"role": "user", "content": expand_prompt}
-                            ],
-                            temperature=0.7
-                        )
-                        raw_content = resp.choices[0].message.content.strip() # 更新 raw_content
-                    except Exception as e:
-                        print(f"扩写失败: {e}")
+            # 8. 优化内容 (扩写/精简 Generator 迭代)
+            refine_gen = self._refine_content(raw_content, target, sec_title, sys_prompt, user_prompt)
+            try:
+                while True:
+                    val = next(refine_gen)
+                    yield f"data: {val}\n\n"
+            except StopIteration as e:
+                raw_content = e.value
 
-                elif current_len > target * 1.4:
-                    yield f"data: {json.dumps({'type': 'log', 'msg': f'   - 字数优化: 正在精简内容 ({current_len}/{target})...'})}\n\n"
-                    condense_prompt = (
-                        f"当前字数({current_len})远超目标({target})。\n"
-                        f"请**精简**上述内容。红线要求：\n"
-                        f"1. **必须保留所有 `[REF]` 引用标记**，绝对不能删减参考文献。\n"
-                        f"2. 删除重复的形容词，保留核心论点。\n"
-                        f"3. **严禁**输出“好的”等废话，直接输出结果。\n"
-                    )
-                    try:
-                        resp = self.client.chat.completions.create(
-                            model=self.model,
-                            messages=[
-                                {"role": "system", "content": sys_prompt},
-                                {"role": "user", "content": user_prompt},
-                                {"role": "assistant", "content": raw_content},
-                                {"role": "user", "content": condense_prompt}
-                            ],
-                            temperature=0.7
-                        )
-                        raw_content = resp.choices[0].message.content.strip() # 更新 raw_content
-                    except Exception as e:
-                        print(f"精简失败: {e}")
+            # 9. 清洗与格式化
+            final_content = self._clean_and_format(raw_content, sec_title, ref_manager)
 
-            # 4. [修复 3 生效] 强力清洗摘要标题 (更新 raw_content)
-            if "摘要" in sec_title or "Abstract" in sec_title:
-                clean_content = raw_content.strip()
-                clean_content = re.sub(r'^#+\s*(摘要|Abstract)\s*', '', clean_content, flags=re.IGNORECASE).strip()
-                if clean_content.startswith("摘要") and len(clean_content) < 10:
-                    clean_content = clean_content[2:].strip()
-                if clean_content.startswith("Abstract") and len(clean_content) < 15:
-                    clean_content = clean_content[8:].strip()
-                raw_content = clean_content # 【关键修改】将清洗结果赋值回 raw_content
-
-            # 5. 通用标题清洗 (移除正文第一行重复的标题)
-            temp_lines = raw_content.strip().split('\n')
-            if temp_lines:
-                first_line_core = re.sub(r'[#*\s]', '', temp_lines[0])
-                title_core = re.sub(r'[#*\s]', '', sec_title)
-                if title_core in first_line_core and len(first_line_core) < len(title_core) + 8:
-                    raw_content = '\n'.join(temp_lines[1:]) # 更新 raw_content
-
-            # 6. 引用处理与格式化
-            # 注意：必须确保 reference.py 中的 process_text_deterministic 也已更新
-            processed_content = ref_manager.process_text_deterministic(raw_content)
-            processed_content = TextCleaner.convert_cn_numbers(processed_content)
-            
-            lines = processed_content.split('\n')
-            formatted_lines = []
-            for line in lines:
-                line = line.strip()
-                line = re.sub(r'^[\(（]空两格[\)）]', '', line) 
-                line = re.sub(r'^空格', '', line)
-                # 排除已经是缩进的、标题、表格、代码块等
-                if (line and not line.startswith('　　') and not line.startswith('#') and 
-                    not line.startswith('|') and not line.startswith('```') and "import" not in line and "plt." not in line):
-                    line = '　　' + line 
-                formatted_lines.append(line)
-            final_content = '\n\n'.join(formatted_lines)
-
-            section_md = f"## {sec_title}\n\n{final_content}\n\n"
+            # 10. 输出结果
+            section_md = f"{header_prefix} {sec_title}\n\n{final_content}\n\n"
             full_content += section_md
             context = final_content
             yield f"data: {json.dumps({'type': 'content', 'md': section_md})}\n\n"
 
+        # 结束处理
         if check_status_func() != "stopped":
             bib = ref_manager.generate_bibliography()
             full_content += bib

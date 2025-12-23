@@ -114,11 +114,13 @@
 
 <div id="loginOverlay">
     <div class="login-box">
-        <h3 class="mb-4 fw-bold text-primary">🔐 欢迎使用论文助手</h3>
-        <p class="text-muted mb-4">请输入您的 User ID 以同步工作区</p>
-        <input type="text" id="userIdInput" class="form-control form-control-lg mb-3" placeholder="例如: user_123">
-        <button class="btn btn-primary w-100 btn-lg" onclick="handleLogin()">进入工作台</button>
-        <div class="mt-3 text-muted small">如果没有ID，系统将自动为您生成一个</div>
+        <h3 class="mb-4 fw-bold text-primary">🔐 论文助手 - 用户登录</h3>
+        <p class="text-muted mb-4">请输入管理员分发的卡密 (Key)</p>
+        <input type="text" id="userIdInput" class="form-control form-control-lg mb-3" placeholder="例如: key_xxxx">
+        <button class="btn btn-primary w-100 btn-lg" id="loginBtn" onclick="handleLogin()">验证并登录</button>
+        <div class="mt-3 text-muted small">
+            <span id="loginMsg"></span>
+        </div>
     </div>
 </div>
 
@@ -241,22 +243,75 @@
     let isPaused = false;
 
     // --- 用户系统 ---
-    window.onload = function() {
+    window.onload = async function() {
         const storedUser = localStorage.getItem('paper_active_user');
         if (storedUser) {
-            currentUserId = storedUser;
-            initWorkspace();
+            // 每次刷新页面时，静默验证一下本地存储的 Key 是否仍然有效
+            // 如果被管理员封禁了，需要踢出
+            try {
+                const res = await fetch('/verify_login', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ key: storedUser })
+                });
+                if (res.ok) {
+                    currentUserId = storedUser;
+                    initWorkspace();
+                } else {
+                    logout(); // Key 失效，强制登出
+                }
+            } catch(e) {
+                // 网络错误等，暂时允许进入或显示错误
+                console.error("Auth check failed", e);
+            }
         } else {
             document.getElementById('loginOverlay').style.display = 'flex';
         }
     };
 
-    function handleLogin() {
+    async function handleLogin() {
         const inputId = document.getElementById('userIdInput').value.trim();
-        currentUserId = inputId || ('user_' + generateUUID().substring(0, 8));
-        if(!inputId) alert("已为您生成新ID: " + currentUserId);
-        localStorage.setItem('paper_active_user', currentUserId);
-        initWorkspace();
+        const msgSpan = document.getElementById('loginMsg');
+        const btn = document.getElementById('loginBtn');
+        
+        if (!inputId) {
+            msgSpan.innerText = "请输入卡密";
+            msgSpan.className = "text-danger";
+            return;
+        }
+
+        btn.disabled = true;
+        btn.innerText = "验证中...";
+
+        try {
+            const res = await fetch('/verify_login', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ key: inputId })
+            });
+            
+            const data = await res.json();
+            
+            if (res.ok) {
+                currentUserId = inputId;
+                localStorage.setItem('paper_active_user', currentUserId);
+                msgSpan.innerText = "登录成功！";
+                msgSpan.className = "text-success";
+                setTimeout(() => {
+                    initWorkspace();
+                }, 500);
+            } else {
+                msgSpan.innerText = data.msg || "登录失败";
+                msgSpan.className = "text-danger";
+                btn.disabled = false;
+                btn.innerText = "验证并登录";
+            }
+        } catch (e) {
+            msgSpan.innerText = "网络请求错误";
+            msgSpan.className = "text-danger";
+            btn.disabled = false;
+            btn.innerText = "验证并登录";
+        }
     }
 
     function initWorkspace() {

@@ -241,6 +241,7 @@
     let fullMarkdownText = "";
     let currentTaskId = "";
     let isPaused = false;
+    let abortController = null; // 【新增】用于强制终止请求
 
     // --- 用户系统 ---
     window.onload = async function() {
@@ -268,6 +269,13 @@
             document.getElementById('loginOverlay').style.display = 'flex';
         }
     };
+
+    async function authenticatedFetch(url, options = {}) {
+        if (!options.headers) options.headers = {};
+        if (!(options.body instanceof FormData)) options.headers['Content-Type'] = 'application/json';
+        options.headers['X-User-ID'] = currentUserId;
+        return fetch(url, options);
+    }
 
     async function handleLogin() {
         const inputId = document.getElementById('userIdInput').value.trim();
@@ -558,6 +566,11 @@
     document.getElementById('paperForm').onsubmit = async (e) => {
         e.preventDefault();
         saveDraft();
+        // --- 1. 如果有旧的请求在跑，先杀掉 ---
+        if (abortController) {
+            abortController.abort();
+        }
+        abortController = new AbortController();
         
         // 恢复检测
         let isResuming = false;
@@ -637,7 +650,7 @@
 
         // 发送请求
         try {
-            const response = await authenticatedFetch('/generate', { method: 'POST', body: formData });
+            const response = await authenticatedFetch('/generate', { method: 'POST', body: formData, signal: abortController.signal });
             const reader = response.body.getReader();
             const decoder = new TextDecoder();
             let buffer = '';
@@ -666,15 +679,22 @@
                                 appendLog("🎉 生成完成！", 'info'); 
                                 alert("生成完成！");
                                 toggleInputs(false);
+                                abortController = null;
                             }
                         } catch (e) {}
                     }
                 }
             }
         } catch (err) {
-            appendLog("❌ 异常: " + err, 'error');
-            btn.disabled = false;
-            toggleInputs(false);
+            if (err.name === 'AbortError') {
+                console.log('用户手动停止了前端请求');
+                // 这里不需要 alert 报错，因为是用户自己点的停止
+            }
+            else {
+                appendLog("❌ 异常: " + err, 'error');
+                btn.disabled = false;
+                toggleInputs(false); 
+            }
         }
     };
 
@@ -724,7 +744,13 @@
     }
     
     async function stopTask() { 
-        if(!confirm("确定停止？")) return;
+        if(!confirm("确定停止？")) 
+            return;
+        // 【新增】前端强制终止连接
+        if (abortController) {
+            abortController.abort(); // 这会直接抛出 AbortError，跳出 onsubmit 的循环
+            abortController = null;
+        }
         await authenticatedFetch('/control', {method: 'POST', body: JSON.stringify({ task_id: currentTaskId, action: 'stop' })});
         document.getElementById('btnSubmit').disabled = false;
         document.getElementById('btnPause').style.display = 'none';
@@ -901,12 +927,7 @@
         renderConfigArea(); // 刷新界面
     }
 
-    async function authenticatedFetch(url, options = {}) {
-        if (!options.headers) options.headers = {};
-        if (!(options.body instanceof FormData)) options.headers['Content-Type'] = 'application/json';
-        options.headers['X-User-ID'] = currentUserId;
-        return fetch(url, options);
-    }
+
 </script>
 </body>
 </html>

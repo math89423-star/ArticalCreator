@@ -7,7 +7,6 @@ from typing import Dict, Generator
 from .reference import ReferenceManager
 from .word import TextCleaner
 
-TASK_STATES = {}
 
 def get_academic_thesis_prompt(target_words: int, ref_content_list: List[str], current_chapter_title: str, chapter_num: str) -> str:
     
@@ -202,7 +201,6 @@ def get_academic_thesis_prompt(target_words: int, ref_content_list: List[str], c
     else:
         visuals_instruction = "### **策略F: 图表禁令**\n**严禁生成任何图表。**"
 
-    # ----------------- 最终组合 (策略A-E保持原样) -----------------
     return f"""
 # 角色
 你现在扮演一位**严谨的学术导师**，辅助学生撰写毕业论文。

@@ -185,18 +185,29 @@ def get_academic_thesis_prompt(target_words: int, ref_content_list: List[str], c
 1.  **表格**:
     -   使用 Markdown 表格语法。
     -   **表名**: 在表格**上方**，格式：`**表{chapter_num}.X 表名**`。
-2.  **统计图 (Python Matplotlib)**:
+
+2.  **统计图 (Python Matplotlib) - 核心要求**:
     -   请编写一段**标准、无错、可直接运行的 Python 代码**。
     -   **代码块格式**: 使用 ` ```python ` 包裹。
     -   **关键要求 (CRITICAL)**: 
+        -   **数据一致性 (最高优先级)**: 图表数据必须**严格来源于正文论述**。严禁正文说“增长20%”而图表显示“增长50%”。图表是正文数据的“镜像”，**绝对禁止**捏造与正文无关的数据集。
+        -   **统计图选型规范**: 必须根据数据逻辑选择最标准的统计图：
+            -   **趋势分析** (随时间变化) -> **折线图 (Line Chart)**
+            -   **不同项对比** (大小比较) -> **柱状图 (Bar Chart)**
+            -   **结构占比** (份额分析) -> **饼图 (Pie Chart)** 或 **环形图**
+            -   **相关性/分布** -> **散点图 (Scatter)** 或 **箱线图 (Boxplot)**
+            -   *严禁使用非统计学的“示意图”或无意义的图形。*
         -   **库导入**: 必须在代码开头显式导入：`import matplotlib.pyplot as plt`, `import seaborn as sns`, `import pandas as pd`, `import numpy as np`。
         -   **数据自包含**: 数据必须在代码内部完整定义（使用 DataFrame 或字典），**严禁**读取外部文件。
         -   **格式规范**: 严禁使用全角空格（\\u3000）或不间断空格（NBSP），必须使用标准空格缩进。
         -   **字体设置**: 必须包含 `plt.rcParams['font.sans-serif'] = ['SimHei', 'Arial Unicode MS', 'sans-serif']` 解决中文乱码。
-        -   **绘图逻辑**: 代码需简单健壮，不要使用复杂或过时的 API。
+        -   **美观性**: 使用 `sns.set_theme(style="whitegrid")`，配色需符合学术规范（如深蓝、深红、灰度），避免过于花哨。
         -   **输出**: 最后**不需要** `plt.show()`。
     -   **图名**: 在代码块**下方**，格式：`**图{chapter_num}.X 图名**`。
-3.  **互动**: 正文必须包含 “如表{chapter_num}.1所示” 或 “如图{chapter_num}.1可见”。
+
+3.  **图文互动**: 
+    -   正文论述数据时，必须提及 “**如图{chapter_num}.X所示**”。
+    -   图表生成后，必须在正文中对图表反映的**趋势、拐点或异常值**进行简要分析，实现图文互证。
 """
     else:
         visuals_instruction = "### **策略F: 图表禁令**\n**严禁生成任何图表。**"

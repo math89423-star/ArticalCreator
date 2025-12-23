@@ -378,22 +378,22 @@
         text = text.trim();
         if (!text) return null;
 
-        // 1. 绝对一级标题 (Keywords)
+        // 1. 绝对一级关键词
         if (/^(摘要|Abstract|参考文献|致谢|总结|结论)/i.test(text)) {
             return { level: 1, type: 'keyword' };
         }
 
-        // 2. 绝对一级标题 (中文章节: 第一章, 第1章)
+        // 2. 绝对一级章节 (第x章)
         if (/^第[一二三四五六七八九十0-9]+[章|部分]/.test(text)) {
             return { level: 1, type: 'chapter' };
         }
 
-        // 3. 明确的层级数字 (1.1, 1.1.1)
-        // 注意：要排除 1. 这种单独的，只匹配 1.1 及以上
+        // 3. [关键] 多级数字 (1.1, 1.1.1) - 必须放在单数字之前判断
+        // 匹配规则：数字.数字... (排除结尾的点)
         const decimalMatch = text.match(/^(\d+(\.\d+)+)/);
         if (decimalMatch) {
             const dots = decimalMatch[1].split('.').length;
-            // 1.1 是2级, 1.1.1 是3级
+            // 1.1 是2级(level=2), 1.1.1 是3级(level=3)
             return { level: dots, type: 'decimal' };
         }
 
@@ -407,13 +407,13 @@
             return { level: 3, type: 'paren' };
         }
 
-        // 6. 简单数字 (1, 1., 2.) -> 歧义项，需要上下文判断
-        // 可能是 "1. 绪论" (一级)，也可能是 "第一章" 下的 "1. 研究背景" (二级)
-        if (/^\d+(\.\s|\s|$|\.|、)/.test(text)) {
-            return { level: 1, type: 'simple_num' }; // 默认为1，稍后在循环中降级
+        // 6. 简单数字 (1, 1., 2.) -> 默认为1级，后续根据上下文可能降级
+        // 匹配：1 标题, 1. 标题, 1、标题
+        if (/^\d+([\.\s、]|$)/.test(text)) {
+            return { level: 1, type: 'simple_num' };
         }
 
-        // 7. 纯文本 -> 默认为最低级内容
+        // 7. 纯文本 -> 默认为二级
         return { level: 2, type: 'text' }; 
     }
 
@@ -422,8 +422,8 @@
         const lines = text.split('\n');
         let processedItems = [];
         
-        // 上下文状态
-        let lastLevel1Type = null; // 记录上一个一级标题的类型 (chapter, keyword, simple_num)
+        // 上下文状态，用于处理混合排版
+        let lastLevel1Type = null; 
 
         lines.forEach(line => {
             const trimmed = line.trim();
@@ -431,18 +431,14 @@
 
             let info = analyzeLineStructure(trimmed);
             
-            // --- [智能上下文修正] ---
-            
-            // 如果遇到 "1." 这种简单数字
-            if (info.type === 'simple_num') {
-                // 如果上一个一级标题是 "第一章" 这种强标题，那么 "1." 降级为二级
-                if (lastLevel1Type === 'chapter') {
-                    info.level = 2;
-                }
-                // 否则(比如全文都是 1. 2. 结构)，保持一级
+            // --- 智能上下文修正 ---
+            // 如果遇到 "1." 这种简单数字，且上一章是 "第一章"
+            // 那么 "1." 应该被识别为 "第一章" 下的二级标题，而不是新的一章
+            if (info.type === 'simple_num' && lastLevel1Type === 'chapter') {
+                info.level = 2;
             }
 
-            // 更新上下文状态
+            // 更新一级标题状态
             if (info.level === 1) {
                 lastLevel1Type = info.type;
             }
@@ -450,24 +446,26 @@
             processedItems.push({
                 text: trimmed,
                 level: info.level,
-                isParent: false, // 稍后计算
-                words: 0         // 初始化
+                isParent: false, // 稍后计算，但不影响显示
+                words: 0,
+                // 默认继承：包含“结果/分析”等词则开启数据挂载
+                useData: /结果|分析|实验|数据|验证|测试/.test(trimmed)
             });
         });
 
-        // 标记父节点 (如果某行下面紧跟一个层级更深的行，则该行为父节点)
+        // 标记父节点 (仅用于逻辑，不用于过滤)
         for (let i = 0; i < processedItems.length - 1; i++) {
             if (processedItems[i+1].level > processedItems[i].level) {
                 processedItems[i].isParent = true;
             }
         }
 
-        // 构建分组结构 (Flat List -> Grouped List)
+        // 构建分组结构
         parsedStructure = [];
         let currentMainGroup = null;
 
         processedItems.forEach(item => {
-            // 判定为一级分组的条件：level=1
+            // 判定为一级大章 (Card)
             if (item.level === 1) {
                 currentMainGroup = { 
                     title: item.text, 
@@ -476,33 +474,22 @@
                 parsedStructure.push(currentMainGroup);
                 
                 // 如果一级标题本身不是父节点(没子节点)，它自己也要作为写作点
-                // 例如 "摘要" 通常没有子节点，它自己就是内容
                 if (!item.isParent) {
-                    currentMainGroup.children.push({ 
-                        text: item.text, 
-                        isParent: false, 
-                        words: 0,
-                        // 继承默认属性
-                        useData: /结果|分析|实验|数据|验证|测试/.test(item.text)
-                    });
+                    currentMainGroup.children.push(item);
                 }
             } else {
-                // 如果开头没有一级标题，创建一个默认容器
+                // 如果没有一级标题，创建默认容器
                 if (!currentMainGroup) {
                     currentMainGroup = { title: "前言/导论", children: [] };
                     parsedStructure.push(currentMainGroup);
                 }
-                // 将二级/三级内容加入当前组
-                currentMainGroup.children.push({ 
-                    text: item.text, 
-                    isParent: item.isParent, 
-                    words: 0,
-                    useData: /结果|分析|实验|数据|验证|测试/.test(item.text)
-                });
+                
+                // [核心修复] 无论是否为父节点，都加入到子列表中
+                // 这样 1.1 (父) 和 1.1.1 (子) 都会显示
+                currentMainGroup.children.push(item);
             }
         });
         
-        // 解析完成后，执行智能字数分配
         smartDistributeWords();
     }
 
@@ -534,70 +521,62 @@
         renderConfigArea();
     }
 
-    // [核心修改] 渲染配置区域 (增加了章节级字数控制)
     function renderConfigArea() {
         const container = document.getElementById('chapterConfigArea');
         container.innerHTML = '';
         let globalTotal = 0;
 
         parsedStructure.forEach((group, gIdx) => {
-            // 1. 计算当前章节的总字数
+            // 计算本章总字数
             let chapterTotalWords = 0;
-            group.children.forEach(c => { if(!c.isParent) chapterTotalWords += (c.words || 0); });
+            group.children.forEach(c => chapterTotalWords += (c.words || 0));
             globalTotal += chapterTotalWords;
 
             const card = document.createElement('div');
             card.className = 'chapter-card';
 
+            // 章节头部
             const header = document.createElement('div');
-            header.className = 'chapter-header py-2'; // 增加一点padding
-            
-            // [新增] 章节头部布局：标题 | 章节字数控制 | 操作按钮
+            header.className = 'chapter-header py-2';
             header.innerHTML = `
                 <div class="d-flex align-items-center" style="width: 35%;">
                     <i class="bi bi-folder2-open me-2 text-primary"></i> 
-                    <span class="text-truncate" title="${group.title}" style="font-weight:bold;">${group.title}</span>
+                    <span class="text-truncate fw-bold" title="${group.title}">${group.title}</span>
                 </div>
-                
                 <div class="d-flex align-items-center justify-content-center" style="width: 40%;">
                     <div class="input-group input-group-sm">
                         <span class="input-group-text bg-white text-muted">本章</span>
-                        <input type="number" class="form-control text-center" 
-                               id="chapter-total-${gIdx}" value="${chapterTotalWords}" step="100" min="0">
-                        <button class="btn btn-outline-secondary" type="button" 
-                                onclick="distributeChapterWords(${gIdx})" title="将字数平均分配给本章小节">
-                            <i class="bi bi-arrow-down-up"></i> 分配
-                        </button>
+                        <input type="number" class="form-control text-center" id="chapter-total-${gIdx}" value="${chapterTotalWords}" step="100" min="0">
+                        <button class="btn btn-outline-secondary" type="button" onclick="distributeChapterWords(${gIdx})"><i class="bi bi-arrow-down-up"></i> 分配</button>
                     </div>
                 </div>
-
                 <div class="d-flex align-items-center justify-content-end" style="width: 25%;">
-                    <button class="btn btn-sm btn-link text-primary p-0 me-2" onclick="sortLeaves(${gIdx})" title="自动排序"><i class="bi bi-sort-numeric-down"></i></button>
-                    <button class="btn btn-sm btn-link text-success p-0 me-2" onclick="addLeaf(${gIdx})" title="添加小节"><i class="bi bi-plus-circle"></i></button>
-                    <button class="btn btn-sm btn-link text-danger p-0" onclick="deleteGroup(${gIdx})" title="删除整章"><i class="bi bi-trash"></i></button>
+                    <button class="btn btn-sm btn-link text-primary p-0 me-2" onclick="sortLeaves(${gIdx})"><i class="bi bi-sort-numeric-down"></i></button>
+                    <button class="btn btn-sm btn-link text-success p-0 me-2" onclick="addLeaf(${gIdx})"><i class="bi bi-plus-circle"></i></button>
+                    <button class="btn btn-sm btn-link text-danger p-0" onclick="deleteGroup(${gIdx})"><i class="bi bi-trash"></i></button>
                 </div>
             `;
             card.appendChild(header);
 
+            // 章节内容列表
             const body = document.createElement('div');
             body.className = 'chapter-body';
 
             group.children.forEach((child, cIdx) => {
-                if (child.isParent) return; 
-                
-                if (child.useData === undefined) {
-                    child.useData = /结果|分析|实验|数据|验证|测试/.test(child.text);
-                }
-
                 const row = document.createElement('div');
                 row.className = 'leaf-row';
                 
+                // [视觉优化] 根据层级计算缩进
+                // 一级标题在Header里，这里的 child 至少是 level 1(无子) 或 2,3...
+                // Level 2 -> 0px, Level 3 -> 20px, Level 4 -> 40px
+                const indent = Math.max(0, (child.level - 2) * 20); 
+                
                 const dataBtnColor = child.useData ? 'btn-outline-success active' : 'btn-outline-secondary';
                 const dataIcon = child.useData ? 'bi-database-fill-check' : 'bi-database';
-                const dataTitle = child.useData ? '已启用：挂载数据' : '未启用：通用生成';
 
                 row.innerHTML = `
-                    <div class="d-flex align-items-center flex-grow-1">
+                    <div class="d-flex align-items-center flex-grow-1" style="padding-left: ${indent}px;">
+                        ${child.level > 2 ? '<i class="bi bi-arrow-return-right text-muted me-2 small"></i>' : ''}
                         <input type="text" class="leaf-title-input" value="${child.text}" 
                                onchange="updateLeaf(${gIdx}, ${cIdx}, 'text', this.value)">
                     </div>
@@ -605,7 +584,7 @@
                     <div class="me-2">
                         <button type="button" class="btn btn-sm ${dataBtnColor}" 
                                 onclick="toggleLeafData(${gIdx}, ${cIdx})" 
-                                title="${dataTitle}" style="font-size: 0.75rem; padding: 2px 6px;">
+                                title="数据挂载开关" style="font-size: 0.75rem; padding: 2px 6px;">
                             <i class="bi ${dataIcon}"></i> 数据
                         </button>
                     </div>
@@ -616,7 +595,7 @@
                                onchange="updateLeaf(${gIdx}, ${cIdx}, 'words', this.value)">
                         <span class="ms-1 small text-muted">字</span>
                     </div>
-                    <button class="btn btn-sm text-secondary ms-2" onclick="deleteLeaf(${gIdx}, ${cIdx})" title="删除"><i class="bi bi-x"></i></button>
+                    <button class="btn btn-sm text-secondary ms-2" onclick="deleteLeaf(${gIdx}, ${cIdx})"><i class="bi bi-x"></i></button>
                 `;
                 body.appendChild(row);
             });

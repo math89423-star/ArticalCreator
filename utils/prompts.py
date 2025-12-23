@@ -217,13 +217,17 @@ def get_academic_thesis_prompt(target_words: int, ref_content_list: List[str], c
     -   错误: ２０２３, ５０％, “Method”
 2.  **数据优先级**: 
     -   **最高优先级**: 如果输入中包含【用户提供的真实数据】，必须**无条件基于该数据**进行分析与制图，**严禁篡改数值**。
-    -   **次级来源**: 仅在用户未提供数据时，才使用【联网检索事实】或通用学术知识。
+    -   **次级来源**: 仅在用户未提供数据时，才使用【联网检索事实】或通用学术知识。**严禁将【联网检索事实】写入正文中**。
 3.  **严禁夸大**: 
     -   **禁止**: “填补空白”、“国内首创”、“完美解决”。
     -   **必须用**: “丰富了...视角”、“提供了实证参考”、“优化了...”。
 4.  **严禁捏造**: 无论是用户数据还是检索数据，都必须保持逻辑自洽，严禁凭空杜撰实验结果。
 5.  **文件引用**: **严禁编造《》内的政策/文件/著作名称**。必须确保该政策/文件/著作，在真实世界存在且名称完全准确。如果不确定真实全称，**严禁使用书名号**，仅描述其内容即可。
-
+6.  **去AI化表达 (核心指令 - 必须执行)**:
+    -   **绝对禁止**: 正文论述中**严禁出现**“**根据提供的数据**”、“**根据输入**”、“**综上所述**”、“**总而言之**”、“**通过上述分析**”等明显的AI或机械化总结词汇。
+    -   **强制替换**:
+        -   凡是想说“根据提供的数据”时 -> **必须替换为**：“**据有关数据表明**”、“**数据分析显示**”、“**实证结果指出**”、“**调研发现**”或“**统计数据显示**”。
+        -   凡是想说“综上所述”时 -> **必须替换为**：“**由此可见**”、“**这一现象反映了**”、“**研究表明**”或直接陈述结论，增强学术沉浸感。
 
 ### **策略C: 章节专属逻辑**
 {section_rule}
@@ -305,29 +309,43 @@ class PaperAutoWriter:
             sec_title = chapter['title']
             if chapter.get('is_parent', False):
                 full_content += f"## {sec_title}\n\n"
-                md_content = f"## {sec_title}\n\n"
-                yield f"data: {json.dumps({'type': 'content', 'md': md_content})}\n\n"
+                yield f"data: {json.dumps({'type': 'content', 'md': f'## {sec_title}\n\n'})}\n\n"
                 continue
 
             target = int(chapter.get('words', 500))
+            if target <= 0:
+                # 生成三级标题 (或者根据层级调整，这里默认写作点是三级或正文段落标题)
+                # 如果不需要标题，可以直接 continue，但通常大纲里有的都需要显示
+                header_md = f"### {sec_title}\n\n" 
+                full_content += header_md
+                yield f"data: {json.dumps({'type': 'content', 'md': header_md})}\n\n"
+                yield f"data: {json.dumps({'type': 'log', 'msg': f'跳过生成: {sec_title} (字数设为0)'})}\n\n"
+                continue
             assigned_refs = chapter_ref_map.get(i, [])
             ref_manager.set_current_chapter_refs(assigned_refs)
             chapter_num = self._extract_chapter_num(sec_title)
-            
             yield f"data: {json.dumps({'type': 'log', 'msg': f'正在撰写: {sec_title}'})}\n\n"
-            
+
             facts_context = ""
+            use_data_flag = chapter.get('use_data', False) # 获取前端传来的开关状态
+
             if "摘要" not in sec_title and "结论" not in sec_title:
-                if custom_data and len(custom_data.strip()) > 5:
-                    yield f"data: {json.dumps({'type': 'log', 'msg': f'   - 正在挂载用户提供的真实数据...'})}\n\n"
+                # 只有当开关开启，且确实有数据时，才挂载
+                if use_data_flag and custom_data and len(custom_data.strip()) > 5:
+                    yield f"data: {json.dumps({'type': 'log', 'msg': f'   - [已启用] 挂载用户真实数据...'})}\n\n"
                     cleaned_data = TextCleaner.convert_cn_numbers(custom_data)
                     facts_context = f"\n【用户提供的真实数据 (最高优先级)】:\n{cleaned_data}\n\n请严格基于以上数据进行论述和分析。"
-                else:
-                    yield f"data: {json.dumps({'type': 'log', 'msg': f'   - 未检测到用户数据，正在检索网络/知识库数据...'})}\n\n"
+                elif use_data_flag:
+                    # 开关开启但没数据，尝试联网（可选逻辑）
+                    yield f"data: {json.dumps({'type': 'log', 'msg': f'   - [已启用] 正在检索网络数据...'})}\n\n"
                     facts = self._research_phase(f"{title} - {sec_title}")
                     if facts:
                         facts = TextCleaner.convert_cn_numbers(facts)
                         facts_context = f"\n【联网检索事实库】:\n{facts}"
+                else:
+                    # 开关关闭
+                    # yield f"data: {json.dumps({'type': 'log', 'msg': f'   - [未启用] 使用通用知识生成...'})}\n\n"
+                    pass
 
             # 1. 构建 Prompt
             if "摘要" in sec_title or "Abstract" in sec_title:

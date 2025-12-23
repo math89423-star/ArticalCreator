@@ -2,9 +2,12 @@ import json
 import os
 import secrets
 import matplotlib
-import docx          # [新增] 处理docx
-import pandas as pd  # [新增] 处理表格
-import pypdf         # [新增] 处理PDF
+import io
+# [新增依赖库]
+import pandas as pd  # 处理 Excel/CSV
+import pypdf         # 处理 PDF
+import docx          # 处理 Word .docx
+
 # 设置后端为 Agg，确保在无显示器的服务器环境下也能运行
 matplotlib.use('Agg') 
 from flask import Flask, render_template, request, Response, stream_with_context, jsonify, send_file, session, redirect, url_for
@@ -23,7 +26,7 @@ API_KEY = "sk-VuSl3xg7XTQUbWzs4QCeinJk70H4rhFUtrLdZlBC6hvjvs1t"
 BASE_URL = "https://tb.api.mkeai.com/v1"
 MODEL_NAME = "deepseek-v3.2" 
 
-# 管理员账号配置 (建议生产环境使用更安全的方式存储)
+# 管理员账号配置
 ADMIN_USERNAME = "admin"
 ADMIN_PASSWORD = "admin123"
 
@@ -46,13 +49,13 @@ def save_keys(keys):
     with open(KEYS_FILE, 'w', encoding='utf-8') as f:
         json.dump(keys, f)
 
-# 内存中缓存有效卡密，减少IO
+# 内存中缓存有效卡密
 VALID_KEYS = set(load_keys())
 
 def is_valid_key(key):
     return key in VALID_KEYS
 
-# --- 任务管理器 (线程安全 + 多用户隔离) ---
+# --- 任务管理器 ---
 class TaskManager:
     def __init__(self):
         self._lock = threading.Lock()
@@ -70,61 +73,80 @@ class TaskManager:
 
 task_manager = TaskManager()
 
-
+# ==============================================================================
+# [新增] 多格式文件内容提取工具
+# ==============================================================================
 def extract_file_content(file_storage) -> str:
+    """
+    根据文件后缀名，提取文件内容为纯文本字符串。
+    支持: .csv, .xlsx, .xls, .txt, .pdf, .docx
+    """
     filename = file_storage.filename.lower()
     content = ""
     
     try:
-        # 1. Excel/CSV
+        # 1. Excel/CSV (转为 Markdown 表格)
         if filename.endswith('.csv'):
-            df = pd.read_csv(file_storage)
-            content = f"\n【文件 {filename} 数据(前50行)】:\n" + df.head(50).to_markdown(index=False)
+            # 读取 CSV
+            try:
+                df = pd.read_csv(file_storage)
+            except UnicodeDecodeError:
+                # 尝试 GBK 编码 (中文常见)
+                file_storage.seek(0)
+                df = pd.read_csv(file_storage, encoding='gbk')
+            
+            # 限制行数，防止 Token 爆炸 (取前 60 行)
+            content = f"\n【文件 {filename} 数据预览(前60行)】:\n" + df.head(60).to_markdown(index=False)
         
         elif filename.endswith(('.xls', '.xlsx')):
             df = pd.read_excel(file_storage)
-            content = f"\n【文件 {filename} 数据(前50行)】:\n" + df.head(50).to_markdown(index=False)
+            content = f"\n【文件 {filename} 数据预览(前60行)】:\n" + df.head(60).to_markdown(index=False)
             
-        # 2. TXT
+        # 2. TXT (纯文本)
         elif filename.endswith('.txt'):
-            text = file_storage.read().decode('utf-8', errors='ignore')
-            content = f"\n【文件 {filename} 内容】:\n{text[:3000]}"
+            content = f"\n【文件 {filename} 内容】:\n"
+            try:
+                text = file_storage.read().decode('utf-8')
+            except:
+                file_storage.seek(0)
+                text = file_storage.read().decode('gbk', errors='ignore')
+            content += text[:5000] # 限制长度
             
-        # 3. PDF (忽略图片，只提文字)
+        # 3. PDF (提取文本，忽略图片)
         elif filename.endswith('.pdf'):
             reader = pypdf.PdfReader(file_storage)
             text = ""
-            # 限制页数，防止过长
-            for i, page in enumerate(reader.pages[:10]): 
+            # 限制页数 (前 15 页)
+            for i, page in enumerate(reader.pages[:15]): 
                 page_text = page.extract_text()
-                if page_text: text += page_text + "\n"
-            content = f"\n【文件 {filename} 内容提取(前10页)】:\n{text}"
+                if page_text: 
+                    text += f"[第{i+1}页] {page_text}\n"
+            content = f"\n【文件 {filename} 内容提取】:\n{text}"
 
-        # 4. [新增] DOCX (忽略图片，只提文字)
+        # 4. DOCX (Word 文档)
         elif filename.endswith('.docx'):
             doc = docx.Document(file_storage)
             text = ""
-            # 提取段落文本
+            # 提取段落
             for para in doc.paragraphs:
                 if para.text.strip():
                     text += para.text + "\n"
-            # 提取表格文本 (可选)
+            # 提取表格 (简单转文本)
             for table in doc.tables:
                 for row in table.rows:
                     row_text = [cell.text.strip() for cell in row.cells]
                     text += " | ".join(row_text) + "\n"
             
-            content = f"\n【文件 {filename} 内容提取】:\n{text[:5000]}" # 同样做个长度限制
+            content = f"\n【文件 {filename} 内容提取】:\n{text[:5000]}"
 
         else:
-            content = f"\n【文件 {filename}】: 不支持的文件格式。"
+            content = f"\n【文件 {filename}】: 暂不支持该格式解析。"
             
     except Exception as e:
         print(f"解析文件 {filename} 失败: {e}")
         content = f"\n【文件 {filename}】: 解析失败 - {str(e)}"
         
     return content
-
 
 # ==============================================================================
 # 路由逻辑
@@ -134,7 +156,6 @@ def extract_file_content(file_storage) -> str:
 def index():
     return render_template('index.html')
 
-# --- 1. 用户鉴权接口 ---
 @app.route('/verify_login', methods=['POST'])
 def verify_login():
     key = request.json.get('key', '').strip()
@@ -143,11 +164,8 @@ def verify_login():
     else:
         return jsonify({"status": "fail", "msg": "无效的卡密，请联系管理员获取"}), 401
 
-# --- 2. 管理员相关路由 ---
 @app.route('/admin')
 def admin_page():
-    # if not session.get('is_admin'):
-    #     return render_template('admin_login.html') # 需要新建这个简单页面或复用逻辑
     return render_template('admin.html')
 
 @app.route('/api/admin/login', methods=['POST'])
@@ -166,29 +184,21 @@ def admin_logout():
 @app.route('/api/admin/keys', methods=['GET'])
 def get_keys():
     if not session.get('is_admin'): return "Unauthorized", 401
-    # 将集合转为列表返回
     return jsonify({"keys": list(VALID_KEYS)})
 
 @app.route('/api/admin/keys', methods=['POST'])
 def add_key():
     if not session.get('is_admin'): return "Unauthorized", 401
-    # 1. 获取前端传来的自定义卡密
     data = request.json or {}
     custom_key = data.get('key', '').strip()
     new_key = ""
-    # 2. 判断逻辑
     if custom_key:
-        # 如果管理员输入了卡密，先检查是否已存在
         if custom_key in VALID_KEYS:
-            return jsonify({"status": "fail", "msg": f"卡密 '{custom_key}' 已存在，请勿重复添加"}), 400
+            return jsonify({"status": "fail", "msg": f"卡密 '{custom_key}' 已存在"}), 400
         new_key = custom_key
     else:
-        # 如果管理员留空，则自动生成随机卡密 (保留原有逻辑作为备用)
         new_key = "key_" + secrets.token_hex(4)
-        # 极小概率重复检查
-        if new_key in VALID_KEYS:
-             new_key = "key_" + secrets.token_hex(4)
-    # 3. 保存
+        if new_key in VALID_KEYS: new_key = "key_" + secrets.token_hex(4)
     VALID_KEYS.add(new_key)
     save_keys(list(VALID_KEYS))
     return jsonify({"status": "success", "key": new_key})
@@ -202,38 +212,28 @@ def delete_key():
         save_keys(list(VALID_KEYS))
     return jsonify({"status": "success"})
 
-# --- 3. 业务功能路由 (增加鉴权拦截) ---
+# --- 业务功能 ---
 
 def check_auth():
-    """辅助函数：检查请求头中的卡密是否有效"""
     user_id = request.headers.get('X-User-ID')
-    if not user_id or user_id not in VALID_KEYS:
-        return False
+    if not user_id or user_id not in VALID_KEYS: return False
     return True
 
 @app.route('/control', methods=['POST'])
 def control_task():
     if not check_auth(): return jsonify({"error": "无效的卡密"}), 401
-    
     user_id = request.headers.get('X-User-ID')
     data = request.json
     task_id = data.get('task_id')
     action = data.get('action')
-    
-    if action == 'pause': 
-        task_manager.set_status(user_id, task_id, 'paused')
-    elif action == 'resume': 
-        task_manager.set_status(user_id, task_id, 'running')
-    elif action == 'stop': 
-        task_manager.set_status(user_id, task_id, 'stopped')
-        
+    if action == 'pause': task_manager.set_status(user_id, task_id, 'paused')
+    elif action == 'resume': task_manager.set_status(user_id, task_id, 'running')
+    elif action == 'stop': task_manager.set_status(user_id, task_id, 'stopped')
     return jsonify({"status": "success"})
 
 @app.route('/export_docx', methods=['POST'])
 def export_docx():
-    # 导出可适度放宽，或者也加上鉴权
     if not check_auth(): return jsonify({"error": "无效的卡密"}), 401
-    
     data = request.json
     try:
         file_stream = MarkdownToDocx.convert(data.get('content', ''))
@@ -245,19 +245,34 @@ def export_docx():
 
 @app.route('/generate', methods=['POST'])
 def generate():
-    # 【核心安全拦截】
+    # 1. 鉴权
     if not check_auth(): return "Unauthorized: Invalid Key", 401
 
     user_id = request.headers.get('X-User-ID')
+    
+    # 2. 获取表单文本数据
     raw_chapters = request.form.get('chapter_data')
     title = request.form.get('title')
     references = request.form.get('references')
-    custom_data = request.form.get('custom_data', '')
+    text_custom_data = request.form.get('custom_data', '') # 用户在文本框输入的
     task_id = request.form.get('task_id')
     initial_context = request.form.get('initial_context', '') 
     
-    task_manager.set_status(user_id, task_id, 'running')
+    # 3. [核心修改] 处理上传的文件
+    uploaded_files = request.files.getlist('data_files') # 获取文件列表
+    file_extracted_text = ""
     
+    if uploaded_files:
+        for file in uploaded_files:
+            if file.filename:
+                # 调用解析函数
+                file_extracted_text += extract_file_content(file) + "\n\n"
+    
+    # 4. 合并数据：文本框内容 + 文件解析内容
+    final_custom_data = text_custom_data + "\n" + file_extracted_text
+    
+    # 5. 启动生成
+    task_manager.set_status(user_id, task_id, 'running')
     writer = PaperAutoWriter(API_KEY, BASE_URL, MODEL_NAME)
     
     def check_status_func():
@@ -270,7 +285,7 @@ def generate():
                 title, 
                 json.loads(raw_chapters), 
                 references, 
-                custom_data, 
+                final_custom_data,  # 传入合并后的数据
                 check_status_func,
                 initial_context 
             )
@@ -279,10 +294,7 @@ def generate():
     )
 
 if __name__ == '__main__':
-    # 初始化一个默认 key 方便调试，如果文件不存在
     if not os.path.exists(KEYS_FILE):
         VALID_KEYS.add("test_vip_888")
         save_keys(list(VALID_KEYS))
-        print("初始化默认卡密: test_vip_888")
-        
     app.run(debug=True, host="0.0.0.0", port=8001, threaded=True)

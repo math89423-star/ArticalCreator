@@ -12,7 +12,7 @@
         .sidebar { background: white; padding: 25px; border-right: 1px solid #e0e0e0; height: 100vh; overflow-y: auto; display: flex; flex-direction: column; }
         .output-area { background: white; padding: 40px; min-height: 100vh; overflow-y: auto; position: relative;}
         
-        /* 日志区域样式优化 */
+        /* 日志区域样式 */
         #logArea { 
             font-size: 0.85rem; 
             background: #212529; 
@@ -102,6 +102,7 @@
         .login-box {
             background: white; padding: 40px; border-radius: 10px; width: 400px;
             text-align: center;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.3);
         }
         
         .history-item {
@@ -118,9 +119,7 @@
         <p class="text-muted mb-4">请输入管理员分发的卡密 (Key)</p>
         <input type="text" id="userIdInput" class="form-control form-control-lg mb-3" placeholder="例如: key_xxxx">
         <button class="btn btn-primary w-100 btn-lg" id="loginBtn" onclick="handleLogin()">验证并登录</button>
-        <div class="mt-3 text-muted small">
-            <span id="loginMsg"></span>
-        </div>
+        <div class="mt-3 text-muted small"><span id="loginMsg"></span></div>
     </div>
 </div>
 
@@ -141,6 +140,7 @@
                         </ul>
                     </div>
                 </div>
+                
                 <div class="d-grid gap-2 mb-3">
                     <button type="button" class="btn btn-outline-success fw-bold" onclick="createNewPaper()">
                         <i class="bi bi-plus-circle-fill"></i> ✨ 新建论文
@@ -189,8 +189,20 @@
                     </div>
 
                     <div class="mb-3">
-                        <label class="form-label fw-bold"><span class="step-badge">5</span>真实研究数据 (可选)</label>
-                        <textarea class="form-control" id="customData" rows="3" placeholder="粘贴实验数据/调查结果..."></textarea>
+                        <label class="form-label fw-bold"><span class="step-badge">5</span>真实研究数据 (支持上传)</label>
+                        
+                        <div class="card p-2 mb-2 bg-light" style="border: 2px dashed #dee2e6;">
+                            <div class="d-flex justify-content-between align-items-center">
+                                <span class="small text-muted ms-2">支持 .xlsx, .csv, .docx, .pdf, .txt</span>
+                                <label class="btn btn-sm btn-outline-primary" for="fileInput" style="cursor: pointer;">
+                                    <i class="bi bi-folder-plus"></i> 选择文件
+                                </label>
+                                <input type="file" id="fileInput" multiple accept=".csv,.xlsx,.xls,.txt,.pdf,.docx" style="display: none;" onchange="handleFileSelect()">
+                            </div>
+                            <div id="fileListDisplay" class="mt-2 small text-dark ps-2"></div>
+                        </div>
+
+                        <textarea class="form-control" id="customData" rows="2" placeholder="在此补充数据的文字说明，或直接粘贴小段文本..."></textarea>
                     </div>
 
                     <button type="submit" id="btnSubmit" class="btn btn-primary w-100 fw-bold py-2">🚀 3. 开始生成</button>
@@ -235,20 +247,19 @@
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 <script>
-    // 全局状态
+    // --- 全局状态 ---
     let currentUserId = null;
-    let parsedStructure = []; // 结构: [{ title: "章名", children: [{text: "1.1...", words: 500, isParent: false}, ...] }]
+    let parsedStructure = []; 
     let fullMarkdownText = "";
     let currentTaskId = "";
     let isPaused = false;
-    let abortController = null; // 【新增】用于强制终止请求
+    let abortController = null; // 用于强制终止请求
+    let selectedFiles = [];     // 存储上传的文件对象
 
-    // --- 用户系统 ---
+    // --- 1. 用户登录与鉴权 ---
     window.onload = async function() {
         const storedUser = localStorage.getItem('paper_active_user');
         if (storedUser) {
-            // 每次刷新页面时，静默验证一下本地存储的 Key 是否仍然有效
-            // 如果被管理员封禁了，需要踢出
             try {
                 const res = await fetch('/verify_login', {
                     method: 'POST',
@@ -259,37 +270,23 @@
                     currentUserId = storedUser;
                     initWorkspace();
                 } else {
-                    logout(); // Key 失效，强制登出
+                    logout(); // 卡密失效
                 }
-            } catch(e) {
-                // 网络错误等，暂时允许进入或显示错误
-                console.error("Auth check failed", e);
-            }
+            } catch(e) { console.error("Auth check failed", e); }
         } else {
             document.getElementById('loginOverlay').style.display = 'flex';
         }
     };
-
-    async function authenticatedFetch(url, options = {}) {
-        if (!options.headers) options.headers = {};
-        if (!(options.body instanceof FormData)) options.headers['Content-Type'] = 'application/json';
-        options.headers['X-User-ID'] = currentUserId;
-        return fetch(url, options);
-    }
 
     async function handleLogin() {
         const inputId = document.getElementById('userIdInput').value.trim();
         const msgSpan = document.getElementById('loginMsg');
         const btn = document.getElementById('loginBtn');
         
-        if (!inputId) {
-            msgSpan.innerText = "请输入卡密";
-            msgSpan.className = "text-danger";
-            return;
+        if (!inputId) { 
+            msgSpan.innerText = "请输入卡密"; msgSpan.className = "text-danger"; return; 
         }
-
-        btn.disabled = true;
-        btn.innerText = "验证中...";
+        btn.disabled = true; btn.innerText = "验证中...";
 
         try {
             const res = await fetch('/verify_login', {
@@ -297,28 +294,19 @@
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({ key: inputId })
             });
-            
             const data = await res.json();
-            
             if (res.ok) {
                 currentUserId = inputId;
                 localStorage.setItem('paper_active_user', currentUserId);
-                msgSpan.innerText = "登录成功！";
-                msgSpan.className = "text-success";
-                setTimeout(() => {
-                    initWorkspace();
-                }, 500);
+                msgSpan.innerText = "登录成功！"; msgSpan.className = "text-success";
+                setTimeout(() => { initWorkspace(); }, 500);
             } else {
-                msgSpan.innerText = data.msg || "登录失败";
-                msgSpan.className = "text-danger";
-                btn.disabled = false;
-                btn.innerText = "验证并登录";
+                msgSpan.innerText = data.msg || "登录失败"; msgSpan.className = "text-danger";
+                btn.disabled = false; btn.innerText = "验证并登录";
             }
         } catch (e) {
-            msgSpan.innerText = "网络请求错误";
-            msgSpan.className = "text-danger";
-            btn.disabled = false;
-            btn.innerText = "验证并登录";
+            msgSpan.innerText = "网络请求错误"; msgSpan.className = "text-danger";
+            btn.disabled = false; btn.innerText = "验证并登录";
         }
     }
 
@@ -334,14 +322,44 @@
         location.reload();
     }
 
-    // --- 核心逻辑：大纲解析与配置 ---
+    // --- 2. 文件上传处理 ---
+    function handleFileSelect() {
+        const input = document.getElementById('fileInput');
+        const files = Array.from(input.files);
+        selectedFiles = selectedFiles.concat(files);
+        renderFileList();
+        input.value = ''; 
+    }
 
+    function renderFileList() {
+        const list = document.getElementById('fileListDisplay');
+        list.innerHTML = "";
+        selectedFiles.forEach((file, index) => {
+            const item = document.createElement('div');
+            item.className = 'd-flex justify-content-between align-items-center border-bottom py-1';
+            item.innerHTML = `
+                <span class="text-truncate" style="max-width: 200px;" title="${file.name}">
+                    <i class="bi bi-file-earmark-text"></i> ${file.name}
+                </span>
+                <button type="button" class="btn btn-link text-danger p-0 ms-2" onclick="removeFile(${index})">
+                    <i class="bi bi-x-circle"></i>
+                </button>
+            `;
+            list.appendChild(item);
+        });
+    }
+
+    function removeFile(index) {
+        selectedFiles.splice(index, 1);
+        renderFileList();
+    }
+
+    // --- 3. 大纲解析与配置 ---
     function loadDemoOutline() {
         document.getElementById('outlineRaw').value = `摘要\n第一章 绪论\n1.1 研究背景\n1.2 研究意义\n第二章 核心理论\n2.1 理论基础\n2.2 框架分析\n第三章 总结\n参考文献`;
         parseOutline();
     }
 
-    // 解析大纲文本 -> 结构化数据
     function parseOutline() {
         const text = document.getElementById('outlineRaw').value;
         const lines = text.split('\n');
@@ -351,94 +369,67 @@
             const trimmed = line.trim();
             if(!trimmed) return;
             const level = getLineLevel(trimmed, line);
-            // 初始化字数默认为0，稍后智能分配
             processedLines.push({ text: trimmed, level: level, isParent: false, words: 0 });
         });
 
-        // 标记父节点 (如果在它后面有更高层级的节点)
         for (let i = 0; i < processedLines.length - 1; i++) {
             if (processedLines[i+1].level > processedLines[i].level) {
                 processedLines[i].isParent = true;
             }
         }
 
-        // 构建分组结构
         parsedStructure = [];
         let currentMainGroup = null;
 
         processedLines.forEach(item => {
-            // 判断是否为一级章节（或特殊章节）
             const isTopLevel = item.level === 1 || ["摘要", "Abstract", "参考文献", "致谢", "总结"].some(k => item.text.includes(k) && item.text.length < 10);
             
             if (isTopLevel) {
-                currentMainGroup = { 
-                    title: item.text, 
-                    children: [] 
-                };
+                currentMainGroup = { title: item.text, children: [] };
                 parsedStructure.push(currentMainGroup);
-                
-                // 如果一级章节本身不是父节点（例如“摘要”下面没有1.1），它自己也是一个写作点
                 if (!item.isParent) {
                     currentMainGroup.children.push({ text: item.text, isParent: false, words: 0 });
                 }
             } else {
-                // 如果开头没有一级章节，创建默认组
                 if (!currentMainGroup) {
                     currentMainGroup = { title: "前言/其他", children: [] };
                     parsedStructure.push(currentMainGroup);
                 }
-                // 二级/三级节点作为写作点加入当前组
                 currentMainGroup.children.push({ text: item.text, isParent: item.isParent, words: 0 });
             }
         });
         
-        // 解析后立即进行一次智能分配
         smartDistributeWords();
     }
 
-    // 智能分配字数算法
     function smartDistributeWords() {
         const totalTarget = parseInt(document.getElementById('globalTotalWords').value) || 5000;
         let reserved = 0;
-        let activeLeaves = []; // 存储所有需要分配字数的叶子节点
+        let activeLeaves = []; 
 
-        // 1. 遍历所有节点，识别特殊章节
         parsedStructure.forEach(group => {
             group.children.forEach(child => {
-                if (child.isParent) return; // 父节点不写内容
-
-                // 摘要固定字数
+                if (child.isParent) return; 
                 if (child.text.includes("摘要") || child.text.includes("Abstract")) {
-                    child.words = 400;
-                    reserved += 400;
-                }
-                // 参考文献不占字数
-                else if (child.text.includes("参考文献") || child.text.includes("致谢")) {
+                    child.words = 400; reserved += 400;
+                } else if (child.text.includes("参考文献") || child.text.includes("致谢")) {
                     child.words = 0;
-                }
-                else {
+                } else {
                     activeLeaves.push(child);
                 }
             });
         });
 
-        // 2. 平均分配剩余字数
         let remaining = Math.max(0, totalTarget - reserved);
         const count = activeLeaves.length || 1;
         let avgWords = Math.floor(remaining / count);
-        // 规整到 50 的倍数
         avgWords = Math.round(avgWords / 50) * 50;
-        avgWords = Math.max(200, avgWords); // 保底200字
+        avgWords = Math.max(200, avgWords); 
 
-        activeLeaves.forEach(leaf => {
-            leaf.words = avgWords;
-        });
-
-        // 3. 重新渲染界面
+        activeLeaves.forEach(leaf => leaf.words = avgWords);
         renderConfigArea();
     }
 
-    // 渲染配置区域 (核心 UI)
     function renderConfigArea() {
         const container = document.getElementById('chapterConfigArea');
         container.innerHTML = '';
@@ -448,41 +439,60 @@
             const card = document.createElement('div');
             card.className = 'chapter-card';
 
-            // 头部：章节名 + 删除按钮
             const header = document.createElement('div');
             header.className = 'chapter-header';
             header.innerHTML = `
                 <span><i class="bi bi-folder2-open me-1"></i> ${group.title}</span>
                 <div>
-                    <button class="btn btn-sm btn-link text-primary p-0 me-2" onclick="sortLeaves(${gIdx})" title="按标题序号自动排序"><i class="bi bi-sort-numeric-down"></i></button>
-                    <button class="btn btn-sm btn-link text-success p-0 me-2" onclick="addLeaf(${gIdx})" title="添加写作点"><i class="bi bi-plus-circle"></i></button>
-                    <button class="btn btn-sm btn-link text-danger p-0" onclick="deleteGroup(${gIdx})" title="删除整章"><i class="bi bi-trash"></i></button>
+                    <button class="btn btn-sm btn-link text-primary p-0 me-2" onclick="sortLeaves(${gIdx})" title="自动排序"><i class="bi bi-sort-numeric-down"></i></button>
+                    <button class="btn btn-sm btn-link text-success p-0 me-2" onclick="addLeaf(${gIdx})" title="添加"><i class="bi bi-plus-circle"></i></button>
+                    <button class="btn btn-sm btn-link text-danger p-0" onclick="deleteGroup(${gIdx})" title="删除"><i class="bi bi-trash"></i></button>
                 </div>
             `;
             card.appendChild(header);
 
-            // 内容：写作点列表
             const body = document.createElement('div');
             body.className = 'chapter-body';
 
             group.children.forEach((child, cIdx) => {
-                if (child.isParent) return; // 仅显示叶子节点（实际写作点）
-
+                if (child.isParent) return; 
                 currentTotal += child.words;
+                
+                // [新增] 初始化 useData 属性（如果尚未定义）
+                if (child.useData === undefined) {
+                    // 默认策略：如果是“结果、分析、实验、数据”类章节，默认勾选；否则默认不勾选
+                    child.useData = /结果|分析|实验|数据|验证|测试/.test(child.text);
+                }
+
                 const row = document.createElement('div');
                 row.className = 'leaf-row';
+                
+                // [新增] 挂载数据开关样式
+                const dataBtnColor = child.useData ? 'btn-outline-success active' : 'btn-outline-secondary';
+                const dataIcon = child.useData ? 'bi-database-fill-check' : 'bi-database';
+                const dataTitle = child.useData ? '已启用：将强行挂载上传的数据进行论证' : '未启用：仅使用通用知识库';
+
                 row.innerHTML = `
-                    <div class="flex-grow-1">
+                    <div class="d-flex align-items-center flex-grow-1">
                         <input type="text" class="leaf-title-input" value="${child.text}" 
                                onchange="updateLeaf(${gIdx}, ${cIdx}, 'text', this.value)">
                     </div>
+                    
+                    <div class="me-2">
+                        <button type="button" class="btn btn-sm ${dataBtnColor}" 
+                                onclick="toggleLeafData(${gIdx}, ${cIdx})" 
+                                title="${dataTitle}" style="font-size: 0.75rem; padding: 2px 6px;">
+                            <i class="bi ${dataIcon}"></i> 数据
+                        </button>
+                    </div>
+
                     <div class="word-input-group">
                         <input type="number" class="form-control form-control-sm word-input" 
                                value="${child.words}" step="50" min="0" 
                                onchange="updateLeaf(${gIdx}, ${cIdx}, 'words', this.value)">
                         <span class="ms-1 small text-muted">字</span>
                     </div>
-                    <button class="btn btn-sm text-secondary ms-2" onclick="deleteLeaf(${gIdx}, ${cIdx})" title="删除此节"><i class="bi bi-x"></i></button>
+                    <button class="btn btn-sm text-secondary ms-2" onclick="deleteLeaf(${gIdx}, ${cIdx})" title="删除"><i class="bi bi-x"></i></button>
                 `;
                 body.appendChild(row);
             });
@@ -490,89 +500,74 @@
             card.appendChild(body);
             container.appendChild(card);
         });
-
         document.getElementById('totalWords').innerText = currentTotal;
     }
 
-    // --- 数据操作函数 ---
-
+    // --- 数据操作 ---
     function updateLeaf(gIdx, cIdx, field, value) {
         if (field === 'words') value = parseInt(value) || 0;
         parsedStructure[gIdx].children[cIdx][field] = value;
-        
         if (field === 'words') {
-            let total = 0;
-            parsedStructure.forEach(g => g.children.forEach(c => { if(!c.isParent) total += c.words; }));
+            let total = 0; parsedStructure.forEach(g => g.children.forEach(c => { if(!c.isParent) total += c.words; }));
             document.getElementById('totalWords').innerText = total;
         }
-        
-        // [核心修改] 如果修改了标题文本，重新排序
-        if (field === 'text') {
-            // 为了防止用户正在输入时频繁跳动，可以考虑不做实时排序，或者只在失焦时排序。
-            // 鉴于这里是 onchange (失焦触发)，直接排序是安全的。
-            sortLeaves(gIdx);
-        }
+        if (field === 'text') sortLeaves(gIdx);
     }
 
-    function deleteLeaf(gIdx, cIdx) {
-        parsedStructure[gIdx].children.splice(cIdx, 1);
+    // [新增] 切换单个章节的数据挂载状态
+    function toggleLeafData(gIdx, cIdx) {
+        const child = parsedStructure[gIdx].children[cIdx];
+        child.useData = !child.useData; // 切换状态
+        renderConfigArea(); // 重新渲染以更新按钮样式
+    }
+
+    function sortLeaves(gIdx) {
+        const group = parsedStructure[gIdx];
+        const leaves = group.children.filter(c => !c.isParent);
+        const parents = group.children.filter(c => c.isParent);
+        leaves.sort((a, b) => {
+            const extractVersion = (str) => {
+                const match = str.match(/^(\d+(\.\d+)*)/);
+                return match ? match[0].split('.').map(Number) : [9999];
+            };
+            const vA = extractVersion(a.text);
+            const vB = extractVersion(b.text);
+            for (let i = 0; i < Math.max(vA.length, vB.length); i++) {
+                const numA = vA[i] || 0;
+                const numB = vB[i] || 0;
+                if (numA !== numB) return numA - numB;
+            }
+            return 0;
+        });
+        group.children = [...parents, ...leaves];
         renderConfigArea();
     }
 
+    function deleteLeaf(gIdx, cIdx) { parsedStructure[gIdx].children.splice(cIdx, 1); renderConfigArea(); }
     function addLeaf(gIdx) {
-        // 智能推测下一个序号
         const group = parsedStructure[gIdx];
-        let nextNum = 1;
-        const lastLeaf = group.children[group.children.length - 1];
-        if (lastLeaf) {
-            const match = lastLeaf.text.match(/(\d+)$/); // 尝试匹配末尾数字
-            if (match) nextNum = parseInt(match[1]) + 1;
-            else {
-                // 尝试匹配像 2.1 这样的结构
-                const matchDot = lastLeaf.text.match(/\.(\d+)\s/);
-                if (matchDot) nextNum = parseInt(matchDot[1]) + 1;
-            }
-        }
-        // 提示用户输入
-        const defaultTitle = `${gIdx + 1}.${group.children.length + 1} 新增小节`; // 默认占位符
-        const title = prompt("请输入新小节标题 (建议包含序号以便自动排序，如 '2.2 数据分析'):", defaultTitle);
-        
+        const title = prompt("请输入新小节标题 (如 '1.3 研究方法')");
         if (title) {
-            parsedStructure[gIdx].children.push({ text: title, isParent: false, words: 500 });
-            // [核心修改] 添加后立即尝试排序
-            sortLeaves(gIdx); 
+            group.children.push({ text: title, isParent: false, words: 500 });
+            sortLeaves(gIdx);
         }
     }
-
-    function deleteGroup(gIdx) {
-        if(confirm("确定删除该章节及其所有内容吗？")) {
-            parsedStructure.splice(gIdx, 1);
-            renderConfigArea();
-        }
-    }
-
+    function deleteGroup(gIdx) { if(confirm("确定删除该章节吗？")) { parsedStructure.splice(gIdx, 1); renderConfigArea(); } }
     function addManualChapter() {
-        const title = prompt("请输入新章节标题 (例如: 第四章 实验分析)", "新章节");
-        if(title) {
-            parsedStructure.push({
-                title: title,
-                children: [{ text: title + " 概述", isParent: false, words: 500 }]
-            });
-            renderConfigArea();
-        }
+        const title = prompt("请输入新章节标题 (例如: 第四章 实验分析)");
+        if(title) { parsedStructure.push({ title: title, children: [{ text: title + " 概述", isParent: false, words: 500 }] }); renderConfigArea(); }
     }
 
-    // --- 提交逻辑 (生成任务列表) ---
+    // --- 提交与控制 ---
     document.getElementById('paperForm').onsubmit = async (e) => {
         e.preventDefault();
         saveDraft();
-        // --- 1. 如果有旧的请求在跑，先杀掉 ---
-        if (abortController) {
-            abortController.abort();
-        }
-        abortController = new AbortController();
         
-        // 恢复检测
+        // 1. 中断旧请求
+        if (abortController) { abortController.abort(); }
+        abortController = new AbortController();
+
+        // 2. 断点续传检查
         let isResuming = false;
         let existingContext = "";
         if (fullMarkdownText && fullMarkdownText.trim().length > 50) {
@@ -588,46 +583,30 @@
         currentTaskId = generateUUID();
         isPaused = false;
         
-        // 构建任务列表：扁平化处理
+        // 3. 构建任务
         const flatTasks = [];
         parsedStructure.forEach(group => {
-            // 1. 添加章节父任务 (用于生成一级标题 ## 第一章)
-            flatTasks.push({
-                title: group.title,
-                is_parent: true,
-                words: 0
-            });
-
-            // 2. 添加所有子任务 (实际写作内容)
+            flatTasks.push({ title: group.title, is_parent: true, words: 0 });
             group.children.forEach(child => {
                 if (!child.isParent) {
-                    flatTasks.push({
-                        title: child.text,
-                        is_parent: false,
-                        words: child.words
-                    });
+                    flatTasks.push({ title: child.text, is_parent: false, words: child.words, use_data: child.useData });
                 }
             });
         });
 
-        // 过滤已完成任务
         let tasksToSend = flatTasks;
         if (isResuming) {
             tasksToSend = flatTasks.filter(task => {
-                // 如果是父标题，或者已经生成过的子标题，都跳过
                 const headerPattern = new RegExp(`#{1,3}\\s*${escapeRegExp(task.title)}`, 'i');
                 return !headerPattern.test(fullMarkdownText);
             });
-            if (tasksToSend.length === 0) {
-                alert("所有章节均已存在！");
-                return;
-            }
+            if (tasksToSend.length === 0) { alert("所有章节均已存在！"); return; }
             appendLog(`🔄 恢复生成，剩余 ${tasksToSend.length} 个任务...`, 'warn');
         } else {
             appendLog("🚀 开始新任务...", 'info');
         }
 
-        // UI 状态锁定
+        // 4. UI 锁定
         const btn = document.getElementById('btnSubmit');
         const logArea = document.getElementById('logArea');
         const resultDiv = document.getElementById('resultContent');
@@ -644,13 +623,22 @@
         formData.append('title', document.getElementById('paperTitle').value);
         formData.append('references', document.getElementById('references').value);
         formData.append('custom_data', document.getElementById('customData').value);
+        
+        // 添加文件
+        selectedFiles.forEach(file => { formData.append('data_files', file); });
+
         formData.append('chapter_data', JSON.stringify(tasksToSend));
         formData.append('task_id', currentTaskId);
         formData.append('initial_context', existingContext); 
 
-        // 发送请求
+        // 5. 发起请求
         try {
-            const response = await authenticatedFetch('/generate', { method: 'POST', body: formData, signal: abortController.signal });
+            const response = await authenticatedFetch('/generate', { 
+                method: 'POST', 
+                body: formData, 
+                signal: abortController.signal // 绑定信号
+            });
+            
             const reader = response.body.getReader();
             const decoder = new TextDecoder();
             let buffer = '';
@@ -658,9 +646,10 @@
             while (true) {
                 const { done, value } = await reader.read();
                 if (done) break;
+                
                 buffer += decoder.decode(value, { stream: true });
                 const lines = buffer.split('\n\n');
-                buffer = lines.pop();
+                buffer = lines.pop(); // 保留不完整包
 
                 for (const line of lines) {
                     const trimmed = line.trim();
@@ -687,52 +676,23 @@
             }
         } catch (err) {
             if (err.name === 'AbortError') {
-                console.log('用户手动停止了前端请求');
-                // 这里不需要 alert 报错，因为是用户自己点的停止
-            }
-            else {
+                console.log('用户停止'); // 静默处理
+            } else {
                 appendLog("❌ 异常: " + err, 'error');
                 btn.disabled = false;
-                toggleInputs(false); 
+                toggleInputs(false);
             }
         }
     };
 
-    // --- 辅助工具 ---
-    function getLineLevel(text, rawLine) {
-        if (/^第[一二三四五六七八九十]+[章|部分]/.test(text)) return 1;
-        if (/^(摘要|Abstract|参考文献|致谢|总结)/.test(text)) return 1;
-        if (/^(\d+(\.\d+)*)/.test(text)) return text.match(/^(\d+(\.\d+)*)/)[1].split('.').length; 
-        return 2; 
+    // --- 辅助函数 ---
+    async function authenticatedFetch(url, options = {}) {
+        if (!options.headers) options.headers = {};
+        if (!(options.body instanceof FormData)) options.headers['Content-Type'] = 'application/json';
+        options.headers['X-User-ID'] = currentUserId;
+        return fetch(url, options);
     }
 
-    function generateUUID() { return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => (c === 'x' ? Math.random() * 16 | 0 : (Math.random() * 16 | 0) & 0x3 | 0x8).toString(16)); }
-    function escapeRegExp(string) { return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
-    function appendLog(msg, type = 'info') {
-        const logArea = document.getElementById('logArea');
-        const time = new Date().toLocaleTimeString();
-        let color = '#00ff9d';
-        if (type === 'error') color = '#ff4d4d';
-        if (type === 'warn') color = '#ffc107';
-        logArea.innerHTML += `<div style="color:${color}; border-bottom:1px dashed #333; padding:2px 0;">[${time}] ${msg}</div>`;
-        logArea.scrollTop = logArea.scrollHeight;
-    }
-    
-    function toggleInputs(shouldDisable) {
-        const ids = ['paperTitle', 'outlineRaw', 'references', 'customData', 'globalTotalWords'];
-        ids.forEach(id => {
-            const el = document.getElementById(id);
-            if (el) el.disabled = shouldDisable;
-        });
-        // 锁定所有动态生成的输入框
-        document.querySelectorAll('.leaf-title-input').forEach(i => i.disabled = shouldDisable);
-        document.querySelectorAll('.word-input').forEach(i => i.disabled = shouldDisable);
-        // 锁定按钮
-        document.querySelectorAll('.chapter-header button').forEach(b => b.disabled = shouldDisable);
-        document.querySelectorAll('.leaf-row button').forEach(b => b.disabled = shouldDisable);
-    }
-
-    // --- 按钮功能 ---
     async function togglePause() { 
         const btn = document.getElementById('btnPause');
         const action = isPaused ? 'resume' : 'pause';
@@ -744,14 +704,15 @@
     }
     
     async function stopTask() { 
-        if(!confirm("确定停止？")) 
-            return;
-        // 【新增】前端强制终止连接
+        if(!confirm("确定停止？")) return;
+        // 前端强制终止
         if (abortController) {
-            abortController.abort(); // 这会直接抛出 AbortError，跳出 onsubmit 的循环
+            abortController.abort();
             abortController = null;
         }
+        // 后端通知
         await authenticatedFetch('/control', {method: 'POST', body: JSON.stringify({ task_id: currentTaskId, action: 'stop' })});
+        
         document.getElementById('btnSubmit').disabled = false;
         document.getElementById('btnPause').style.display = 'none';
         document.getElementById('btnStop').style.display = 'none';
@@ -760,9 +721,7 @@
     }
 
     function createNewPaper() {
-        if (fullMarkdownText && fullMarkdownText.length > 50) {
-            if (!confirm("⚠️ 新建将清空当前所有内容，确定吗？")) return;
-        }
+        if (fullMarkdownText && fullMarkdownText.length > 50) { if (!confirm("⚠️ 新建将清空当前所有内容，确定吗？")) return; }
         clearResults(true);
         document.getElementById('paperTitle').value = "";
         document.getElementById('outlineRaw').value = "";
@@ -771,6 +730,8 @@
         document.getElementById('chapterConfigArea').innerHTML = "<div class='text-center text-muted small py-4'>请先点击上方“解析大纲”...</div>";
         document.getElementById('totalWords').innerText = "0";
         parsedStructure = [];
+        selectedFiles = [];
+        renderFileList();
         appendLog("✨ 已重置工作台", 'info');
     }
 
@@ -788,33 +749,21 @@
     function exportToMarkdown() {
         if(!fullMarkdownText) return;
         const blob = new Blob([fullMarkdownText], { type: 'text/markdown' });
-        const a = document.createElement('a');
-        a.href = URL.createObjectURL(blob);
-        a.download = 'thesis_result.md';
-        a.click();
+        const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'thesis_result.md'; a.click();
     }
 
     async function exportToDocx() {
         if(!fullMarkdownText) { alert("无内容！"); return; }
         try {
-            const response = await authenticatedFetch('/export_docx', {
-                method: 'POST',
-                body: JSON.stringify({ content: fullMarkdownText })
-            });
+            const response = await authenticatedFetch('/export_docx', { method: 'POST', body: JSON.stringify({ content: fullMarkdownText }) });
             if (response.ok) {
-                const blob = await response.blob();
-                const url = window.URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = url;
-                a.download = (document.getElementById('paperTitle').value || 'thesis') + ".docx";
-                document.body.appendChild(a);
-                a.click();
-                a.remove();
+                const blob = await response.blob(); const url = window.URL.createObjectURL(blob);
+                const a = document.createElement('a'); a.href = url; a.download = (document.getElementById('paperTitle').value || 'thesis') + ".docx";
+                document.body.appendChild(a); a.click(); a.remove();
             } else alert("导出失败");
         } catch (e) { alert("错误: " + e); }
     }
 
-    // --- 历史记录 ---
     function saveDraft() {
         if (!currentUserId) return;
         const draft = {
@@ -823,11 +772,10 @@
             refs: document.getElementById('references').value,
             customData: document.getElementById('customData').value,
             content: fullMarkdownText,
-            structure: parsedStructure, // 新增：保存结构化配置
+            structure: parsedStructure,
             timestamp: new Date().toISOString()
         };
         localStorage.setItem(`draft_${currentUserId}_current`, JSON.stringify(draft));
-        
         let history = JSON.parse(localStorage.getItem(`history_${currentUserId}`) || "[]");
         const idx = history.findIndex(h => h.title === draft.title);
         if (idx > -1) history[idx] = draft;
@@ -844,18 +792,10 @@
             document.getElementById('outlineRaw').value = draft.outline || "";
             document.getElementById('references').value = draft.refs || "";
             document.getElementById('customData').value = draft.customData || "";
-            
-            // 优先恢复结构化配置，否则解析大纲
             if (draft.structure && draft.structure.length > 0) {
                 parsedStructure = draft.structure;
                 renderConfigArea();
-                // 重新计算总字数
-                let total = 0;
-                parsedStructure.forEach(g => g.children.forEach(c => { if(!c.isParent) total += c.words; }));
-                document.getElementById('totalWords').innerText = total;
-            } else if(draft.outline) {
-                parseOutline();
-            }
+            } else if(draft.outline) parseOutline();
 
             if (draft.content && draft.content.trim().length > 0) {
                 fullMarkdownText = draft.content;
@@ -879,11 +819,10 @@
                 div.innerHTML = `<strong>${item.title || '无标题'}</strong> <br><small>${new Date(item.timestamp).toLocaleString()}</small>`;
                 div.onclick = () => {
                     if(confirm("加载历史将覆盖当前内容，确定？")) {
-                        // 临时保存到 localStorage draft，然后调用 loadDraft
                         localStorage.setItem(`draft_${currentUserId}_current`, JSON.stringify(item));
                         loadDraft(currentUserId);
                         bootstrap.Modal.getInstance(document.getElementById('historyModal')).hide();
-                        clearResults(true); // 清理正文显示状态（虽然loadDraft会恢复，但重置一下更安全）
+                        clearResults(true); 
                         if(item.content) {
                              document.getElementById('controlButtons').style.display = 'block';
                              document.getElementById('resultContent').innerHTML = marked.parse(item.content);
@@ -897,37 +836,33 @@
         new bootstrap.Modal(document.getElementById('historyModal')).show();
     }
 
-    function sortLeaves(gIdx) {
-        const group = parsedStructure[gIdx];
-        // 提取子节点（排除父节点）
-        const leaves = group.children.filter(c => !c.isParent);
-        // 暂时移除 leaves，保留 isParent 节点（通常没有，或者在最前）
-        const parents = group.children.filter(c => c.isParent);
-
-        leaves.sort((a, b) => {
-            // 提取标题中的数字版本号 (例如 "2.1.3" -> [2, 1, 3])
-            const extractVersion = (str) => {
-                const match = str.match(/^(\d+(\.\d+)*)/);
-                return match ? match[0].split('.').map(Number) : [9999]; // 没数字的排后面
-            };
-            
-            const vA = extractVersion(a.text);
-            const vB = extractVersion(b.text);
-            
-            for (let i = 0; i < Math.max(vA.length, vB.length); i++) {
-                const numA = vA[i] || 0;
-                const numB = vB[i] || 0;
-                if (numA !== numB) return numA - numB;
-            }
-            return 0;
-        });
-
-        // 合并回 children
-        group.children = [...parents, ...leaves];
-        renderConfigArea(); // 刷新界面
+    function getLineLevel(text, rawLine) {
+        if (/^第[一二三四五六七八九十]+[章|部分]/.test(text)) return 1;
+        if (/^(摘要|Abstract|参考文献|致谢|总结)/.test(text)) return 1;
+        if (/^(\d+(\.\d+)*)/.test(text)) return text.match(/^(\d+(\.\d+)*)/)[1].split('.').length; 
+        return 2; 
     }
-
-
+    function generateUUID() { return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => (c === 'x' ? Math.random() * 16 | 0 : (Math.random() * 16 | 0) & 0x3 | 0x8).toString(16)); }
+    function escapeRegExp(string) { return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+    function appendLog(msg, type = 'info') {
+        const logArea = document.getElementById('logArea');
+        const time = new Date().toLocaleTimeString();
+        let color = '#00ff9d';
+        if (type === 'error') color = '#ff4d4d';
+        if (type === 'warn') color = '#ffc107';
+        logArea.innerHTML += `<div style="color:${color}; border-bottom:1px dashed #333; padding:2px 0;">[${time}] ${msg}</div>`;
+        logArea.scrollTop = logArea.scrollHeight;
+    }
+    function toggleInputs(shouldDisable) {
+        const ids = ['paperTitle', 'outlineRaw', 'references', 'customData', 'globalTotalWords'];
+        ids.forEach(id => { const el = document.getElementById(id); if (el) el.disabled = shouldDisable; });
+        document.querySelectorAll('.leaf-title-input').forEach(i => i.disabled = shouldDisable);
+        document.querySelectorAll('.word-input').forEach(i => i.disabled = shouldDisable);
+        document.querySelectorAll('.chapter-header button').forEach(b => b.disabled = shouldDisable);
+        document.querySelectorAll('.leaf-row button').forEach(b => b.disabled = shouldDisable);
+        // 锁定文件选择
+        document.getElementById('fileInput').disabled = shouldDisable;
+    }
 </script>
 </body>
 </html>

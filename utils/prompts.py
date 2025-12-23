@@ -15,7 +15,9 @@ def get_academic_thesis_prompt(target_words: int, ref_content_list: List[str], c
     # 1. 章节专属逻辑
     # ------------------------------------------------------------------
     section_rule = ""
-    is_abstract = "摘要" in current_chapter_title or "Abstract" in current_chapter_title
+    is_cn_abstract = "摘要" in current_chapter_title
+    is_en_abstract = "Abstract" in current_chapter_title and "摘要" not in current_chapter_title
+
     
     # 判断是否为需要图表的章节 (核心修复)
     # 只有包含以下关键词的章节才启用图表
@@ -24,23 +26,33 @@ def get_academic_thesis_prompt(target_words: int, ref_content_list: List[str], c
         needs_charts = True
     
     # A. 摘要
-    if is_abstract:
+    if is_cn_abstract:
         section_rule = """
 **当前任务：撰写摘要与关键词**
+**红线规则**: 
+1. **严禁输出标题**: 不要输出 "### 摘要" 或 "### Abstract"，直接开始写正文。
+2. **中英对照**: 先写中文部分，再写英文部分。若没有英文（Abstract）部分则不写英文部分。
+
 **逻辑结构**:
 1. **研究背景**: 简述背景（约50字）。
 2. **方法创新**: 做了什么，用了什么方法（约100字）。
 3. **关键发现**: 得到了什么数据或结论（约100字）。
 4. **理论贡献**: 价值是什么（约50字）。
 
-**输出格式**:
-### 摘要
-  [中文摘要内容，350字左右]
-**关键词**：[从题目提取3-5个名词，用分号隔开]
+**格式模板**:
+   - 直接输出摘要正文。
+   - 最后一行输出：**关键词**：词1；词2；词3
+"""
 
-### Abstract
-  [English Abstract, strictly corresponding]
-**Keywords**: [English Keywords]
+    elif is_en_abstract:
+        section_rule = """
+**Current Task: Write English Abstract & Keywords**
+**Requirements**:
+1. **Language**: MUST be written in **English** only. No Chinese allowed.
+2. **Content**: Translate the logic of a standard academic abstract (Background -> Method -> Results -> Conclusion).
+3. **Format**: 
+   - Output the abstract body directly.
+   - Last line: **Keywords**: Word1; Word2; Word3
 """
 
     # B. 背景与意义
@@ -162,7 +174,7 @@ def get_academic_thesis_prompt(target_words: int, ref_content_list: List[str], c
     else:
         ref_instruction = "### **策略D: 引用策略**\n本章节无需强制引用列表中的文献，如需引用数据请使用真实知识。"
 
-    word_count_strategy = f"目标: **{target_words} 字**。" if not is_abstract else "字数目标仅适用于中文部分。"
+    word_count_strategy = f"目标: **{target_words} 字**。" if not (is_en_abstract or is_cn_abstract) else "字数目标仅适用于中文部分。"
 
     # ----------------- 策略F: 更新为 Python 绘图 -----------------
     visuals_instruction = ""
@@ -291,6 +303,7 @@ class PaperAutoWriter:
             if check_status_func() == "stopped": 
                 yield f"data: {json.dumps({'type': 'log', 'msg': '⚠️ 收到停止指令，正在中断...'})}\n\n"
                 break
+            
             sec_title = chapter['title']
             if chapter.get('is_parent', False):
                 full_content += f"## {sec_title}\n\n"
@@ -308,100 +321,98 @@ class PaperAutoWriter:
             facts_context = ""
             if "摘要" not in sec_title and "结论" not in sec_title:
                 if custom_data and len(custom_data.strip()) > 5:
-                    # 场景1: 用户提供了数据 -> 强制使用
                     yield f"data: {json.dumps({'type': 'log', 'msg': f'   - 正在挂载用户提供的真实数据...'})}\n\n"
-                    # 对用户数据也做简单的全角转半角清洗
                     cleaned_data = TextCleaner.convert_cn_numbers(custom_data)
                     facts_context = f"\n【用户提供的真实数据 (最高优先级)】:\n{cleaned_data}\n\n请严格基于以上数据进行论述和分析。"
                 else:
-                    # 场景2: 用户未提供 -> 联网/知识库检索
                     yield f"data: {json.dumps({'type': 'log', 'msg': f'   - 未检测到用户数据，正在检索网络/知识库数据...'})}\n\n"
                     facts = self._research_phase(f"{title} - {sec_title}")
                     if facts:
                         facts = TextCleaner.convert_cn_numbers(facts)
                         facts_context = f"\n【联网检索事实库】:\n{facts}"
 
-            sys_prompt = get_academic_thesis_prompt(target, [r[1] for r in assigned_refs], sec_title, chapter_num)
-            user_prompt = f"题目：{title}\n章节：{sec_title}\n前文：{context[-600:]}\n字数：{target}\n{facts_context}"
+            # 1. 构建 Prompt
+            if "摘要" in sec_title or "Abstract" in sec_title:
+                sys_prompt = get_academic_thesis_prompt(target, [r[1] for r in assigned_refs], sec_title, chapter_num)
+                user_prompt = f"题目：{title}\n章节：{sec_title}\n要求：请直接输出摘要的正文内容，严禁输出“### 摘要”或“### Abstract”等标题。请严格按照“摘要正文 + 关键词”的格式输出。"
+            else:
+                sys_prompt = get_academic_thesis_prompt(target, [r[1] for r in assigned_refs], sec_title, chapter_num)
+                user_prompt = f"题目：{title}\n章节：{sec_title}\n前文：{context[-600:]}\n字数：{target}\n{facts_context}"
             
+            # 2. 调用 LLM
             raw_content = self._call_llm(sys_prompt, user_prompt)
 
-            # --- [新增] 智能字数检查与扩写逻辑 ---
-            # 统计有效字符数 (去除空白符)
+            # 3. 智能字数扩写/精简 (仅对非摘要章节)
             current_len = len(re.sub(r'\s', '', raw_content))
-            # 如果字数少于目标的 60% (根据实际体验调整阈值)，强制扩写
-            if current_len < target * 0.5:
-                yield f"data: {json.dumps({'type': 'log', 'msg': f'   - 检测到字数不足 ({current_len}/{target})，进行深度扩写(禁止新增标题)...'})}\n\n"
-                
-                expand_prompt = (
-                    f"当前输出字数 ({current_len}字) 未达到要求 ({target}字)。\n"
-                    f"请对内容进行**深度扩写**，必须严格遵守以下红线：\n"
-                    f"1. **零废话**：严禁输出“好的”、“如下所示”、“经过扩写”等任何对话式语句。**直接输出论文正文**。\n"
-                    f"2. **引用保护**：所有参考文献引用（作者、年份、REF标记）必须**原样保留**，不可修改。\n"
-                    f"3. **禁止标题**：严禁新增任何 Markdown 标题 (#/##)。\n"
-                    f"4. **禁止统计**：文末严禁输出“(全文x字)”之类的统计语。\n"
-                    f"请直接输出扩写后的内容。"
-                )
-                
-                # 将初稿作为上下文，要求扩写
-                expand_messages = [
-                    {"role": "system", "content": sys_prompt},
-                    {"role": "user", "content": user_prompt},
-                    {"role": "assistant", "content": raw_content},
-                    {"role": "user", "content": expand_prompt}
-                ]
-                try:
-                    # 使用临时调用进行扩写
-                    resp = self.client.chat.completions.create(
-                        model=self.model,
-                        messages=expand_messages,
-                        temperature=0.7
+            if "摘要" not in sec_title and "Abstract" not in sec_title:
+                if current_len < target * 0.6: 
+                    yield f"data: {json.dumps({'type': 'log', 'msg': f'   - 字数优化: 正在扩充内容 ({current_len}/{target})...'})}\n\n"
+                    expand_prompt = (
+                        f"当前字数({current_len})与目标({target})差距较大。\n"
+                        f"请**扩写**上述内容。红线要求：\n"
+                        f"1. **严禁**删除原文中的任何 `[REF]` 引用标记。\n"
+                        f"2. 增加具体案例、理论分析或数据对比。\n"
+                        f"3. **严禁**输出“好的”、“扩写如下”等废话，直接输出扩写后的正文。\n"
                     )
-                    raw_content = resp.choices[0].message.content.strip()
-                except Exception as e:
-                    print(f"扩写失败: {e}")
+                    try:
+                        resp = self.client.chat.completions.create(
+                            model=self.model,
+                            messages=[
+                                {"role": "system", "content": sys_prompt},
+                                {"role": "user", "content": user_prompt},
+                                {"role": "assistant", "content": raw_content},
+                                {"role": "user", "content": expand_prompt}
+                            ],
+                            temperature=0.7
+                        )
+                        raw_content = resp.choices[0].message.content.strip() # 更新 raw_content
+                    except Exception as e:
+                        print(f"扩写失败: {e}")
 
-            # 2. [新增] 字数过多 -> 精简
-            elif current_len > target * 1.5:
-                yield f"data: {json.dumps({'type': 'log', 'msg': f'   - 检测到字数过多 ({current_len}/{target})，正在进行精简...'})}\n\n"
-                
-                condense_prompt = (
-                    f"当前输出字数 ({current_len}字) 远超要求 ({target}字)。\n"
-                    f"请对内容进行**精简**，必须严格遵守以下红线：\n"
-                    f"1. **零废话**：严禁输出“好的”、“已为您精简”等任何对话式语句。**直接输出论文正文**。\n"
-                    f"2. **引用绝对保留**：原文中的所有参考文献引用（如 '作者(年份)...[REF]'）**必须原样保留**，严禁删除或修改。\n"
-                    f"3. **禁止统计**：文末严禁输出“(全文x字)”之类的统计语。\n"
-                    f"4. **严控篇幅**：目标字数 {target} 字左右。\n"
-                    f"请直接输出精简后的内容。"
-                )
-                
-                condense_messages = [
-                    {"role": "system", "content": sys_prompt},
-                    {"role": "user", "content": user_prompt},
-                    {"role": "assistant", "content": raw_content},
-                    {"role": "user", "content": condense_prompt}
-                ]
-                
-                try:
-                    resp = self.client.chat.completions.create(
-                        model=self.model,
-                        messages=condense_messages,
-                        temperature=0.7
+                elif current_len > target * 1.4:
+                    yield f"data: {json.dumps({'type': 'log', 'msg': f'   - 字数优化: 正在精简内容 ({current_len}/{target})...'})}\n\n"
+                    condense_prompt = (
+                        f"当前字数({current_len})远超目标({target})。\n"
+                        f"请**精简**上述内容。红线要求：\n"
+                        f"1. **必须保留所有 `[REF]` 引用标记**，绝对不能删减参考文献。\n"
+                        f"2. 删除重复的形容词，保留核心论点。\n"
+                        f"3. **严禁**输出“好的”等废话，直接输出结果。\n"
                     )
-                    raw_content = resp.choices[0].message.content.strip()
-                except Exception as e:
-                    print(f"精简失败: {e}")
+                    try:
+                        resp = self.client.chat.completions.create(
+                            model=self.model,
+                            messages=[
+                                {"role": "system", "content": sys_prompt},
+                                {"role": "user", "content": user_prompt},
+                                {"role": "assistant", "content": raw_content},
+                                {"role": "user", "content": condense_prompt}
+                            ],
+                            temperature=0.7
+                        )
+                        raw_content = resp.choices[0].message.content.strip() # 更新 raw_content
+                    except Exception as e:
+                        print(f"精简失败: {e}")
 
+            # 4. [修复 3 生效] 强力清洗摘要标题 (更新 raw_content)
+            if "摘要" in sec_title or "Abstract" in sec_title:
+                clean_content = raw_content.strip()
+                clean_content = re.sub(r'^#+\s*(摘要|Abstract)\s*', '', clean_content, flags=re.IGNORECASE).strip()
+                if clean_content.startswith("摘要") and len(clean_content) < 10:
+                    clean_content = clean_content[2:].strip()
+                if clean_content.startswith("Abstract") and len(clean_content) < 15:
+                    clean_content = clean_content[8:].strip()
+                raw_content = clean_content # 【关键修改】将清洗结果赋值回 raw_content
 
-            # 方案：比对第一行和sec_title，如果高度相似则移除第一行
+            # 5. 通用标题清洗 (移除正文第一行重复的标题)
             temp_lines = raw_content.strip().split('\n')
             if temp_lines:
-                # 去除 # * 和空格进行核心词比对
                 first_line_core = re.sub(r'[#*\s]', '', temp_lines[0])
                 title_core = re.sub(r'[#*\s]', '', sec_title)
-                # 如果第一行包含标题核心内容，且长度没有比标题长太多（防止误删正文第一句），则判定为重复标题
                 if title_core in first_line_core and len(first_line_core) < len(title_core) + 8:
-                    raw_content = '\n'.join(temp_lines[1:])
+                    raw_content = '\n'.join(temp_lines[1:]) # 更新 raw_content
+
+            # 6. 引用处理与格式化
+            # 注意：必须确保 reference.py 中的 process_text_deterministic 也已更新
             processed_content = ref_manager.process_text_deterministic(raw_content)
             processed_content = TextCleaner.convert_cn_numbers(processed_content)
             
@@ -409,6 +420,9 @@ class PaperAutoWriter:
             formatted_lines = []
             for line in lines:
                 line = line.strip()
+                line = re.sub(r'^[\(（]空两格[\)）]', '', line) 
+                line = re.sub(r'^空格', '', line)
+                # 排除已经是缩进的、标题、表格、代码块等
                 if (line and not line.startswith('　　') and not line.startswith('#') and 
                     not line.startswith('|') and not line.startswith('```') and "import" not in line and "plt." not in line):
                     line = '　　' + line 

@@ -2,6 +2,9 @@ import json
 import os
 import secrets
 import matplotlib
+import docx          # [新增] 处理docx
+import pandas as pd  # [新增] 处理表格
+import pypdf         # [新增] 处理PDF
 # 设置后端为 Agg，确保在无显示器的服务器环境下也能运行
 matplotlib.use('Agg') 
 from flask import Flask, render_template, request, Response, stream_with_context, jsonify, send_file, session, redirect, url_for
@@ -66,6 +69,62 @@ class TaskManager:
             return self._user_tasks[user_id].get(task_id, {}).get('status', 'stopped')
 
 task_manager = TaskManager()
+
+
+def extract_file_content(file_storage) -> str:
+    filename = file_storage.filename.lower()
+    content = ""
+    
+    try:
+        # 1. Excel/CSV
+        if filename.endswith('.csv'):
+            df = pd.read_csv(file_storage)
+            content = f"\n【文件 {filename} 数据(前50行)】:\n" + df.head(50).to_markdown(index=False)
+        
+        elif filename.endswith(('.xls', '.xlsx')):
+            df = pd.read_excel(file_storage)
+            content = f"\n【文件 {filename} 数据(前50行)】:\n" + df.head(50).to_markdown(index=False)
+            
+        # 2. TXT
+        elif filename.endswith('.txt'):
+            text = file_storage.read().decode('utf-8', errors='ignore')
+            content = f"\n【文件 {filename} 内容】:\n{text[:3000]}"
+            
+        # 3. PDF (忽略图片，只提文字)
+        elif filename.endswith('.pdf'):
+            reader = pypdf.PdfReader(file_storage)
+            text = ""
+            # 限制页数，防止过长
+            for i, page in enumerate(reader.pages[:10]): 
+                page_text = page.extract_text()
+                if page_text: text += page_text + "\n"
+            content = f"\n【文件 {filename} 内容提取(前10页)】:\n{text}"
+
+        # 4. [新增] DOCX (忽略图片，只提文字)
+        elif filename.endswith('.docx'):
+            doc = docx.Document(file_storage)
+            text = ""
+            # 提取段落文本
+            for para in doc.paragraphs:
+                if para.text.strip():
+                    text += para.text + "\n"
+            # 提取表格文本 (可选)
+            for table in doc.tables:
+                for row in table.rows:
+                    row_text = [cell.text.strip() for cell in row.cells]
+                    text += " | ".join(row_text) + "\n"
+            
+            content = f"\n【文件 {filename} 内容提取】:\n{text[:5000]}" # 同样做个长度限制
+
+        else:
+            content = f"\n【文件 {filename}】: 不支持的文件格式。"
+            
+    except Exception as e:
+        print(f"解析文件 {filename} 失败: {e}")
+        content = f"\n【文件 {filename}】: 解析失败 - {str(e)}"
+        
+    return content
+
 
 # ==============================================================================
 # 路由逻辑

@@ -77,20 +77,44 @@ class ReferenceManager:
     def process_text_deterministic(self, text: str) -> str:
         result_text = ""
         parts = text.split('[REF]')
+        
+        # 1. 填充 LLM 已经生成的引用位置
         for i, part in enumerate(parts):
             result_text += part
             if i < len(parts) - 1:
                 if self.current_chapter_refs:
                     global_id, _ = self.current_chapter_refs.pop(0)
                     result_text += f"[{global_id}]"
+                else:
+                    # 如果 LLM 生成的标记多于分配的文献(极少见)，不填ID
+                    result_text += "" 
         
+        # 2. [核心修复] 处理剩余未引用的文献
+        # 不再堆叠 ID，而是生成完整的补充句子
         if self.current_chapter_refs:
             result_text += "\n\n"
-            remaining_ids = []
-            while self.current_chapter_refs:
-                global_id, _ = self.current_chapter_refs.pop(0)
-                remaining_ids.append(f"[{global_id}]")
-            result_text += f"此外，相关研究还涵盖了多方面的探索{ ''.join(remaining_ids) }。"
+            
+            # 定义一些连接词，让句子看起来不那么重复
+            connectors = ["此外，", "另有研究表明，", "相关学者还指出，", "补充研究发现，", "同时，"]
+            
+            for i, (global_id, content) in enumerate(self.current_chapter_refs):
+                # 尝试从文献内容中提取更有意义的信息 (比如作者或标题)
+                # 假设 content 格式是 "张三. 论人工智能. 期刊..."
+                # 简单的清洗：去掉换行，截取前50个字作为概述
+                clean_content = content.replace('\n', ' ').strip()
+                
+                # 提取简单的“指代物”，如果太长就截断，避免把整篇参考文献贴进去
+                if len(clean_content) > 60:
+                    summary = clean_content[:60] + "..."
+                else:
+                    summary = clean_content
+                
+                prefix = connectors[i % len(connectors)]
+                
+                # 生成通顺的句子： "此外，[文献内容]的研究具有参考价值[10]。"
+                # 这样既利用了文献，又不会显得只是堆砌数字
+                result_text += f"{prefix}文献“{summary}”对本领域亦有重要贡献[{global_id}]。 "
+                
         return result_text
 
     def generate_bibliography(self) -> str:

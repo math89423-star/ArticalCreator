@@ -309,7 +309,8 @@ class PaperAutoWriter:
             sec_title = chapter['title']
             if chapter.get('is_parent', False):
                 full_content += f"## {sec_title}\n\n"
-                yield f"data: {json.dumps({'type': 'content', 'md': f'## {sec_title}\n\n'})}\n\n"
+                md_content = f'## {sec_title}\n\n'
+                yield f"data: {json.dumps({'type': 'content', 'md': md_content})}\n\n"
                 continue
 
             target = int(chapter.get('words', 500))

@@ -2,7 +2,6 @@ import json
 import os
 import secrets
 import matplotlib
-import io
 # [新增依赖库]
 import pandas as pd  # 处理 Excel/CSV
 import pypdf         # 处理 PDF

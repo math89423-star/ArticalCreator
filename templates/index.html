@@ -731,30 +731,19 @@
         // 3. 构建任务
         const flatTasks = [];
         parsedStructure.forEach(group => {
-            flatTasks.push({ title: group.title, is_parent: true, words: 0 });
-            // group.children.forEach(child => {
-            //     if (!child.isParent) {
-            //         flatTasks.push({ title: child.text, is_parent: false, words: child.words, use_data: child.useData });
-            //     }
-            // });
-            const flatTasks = [];
-            parsedStructure.forEach(group => {
             // 一级大章 (如 "第一章") -> 对应 Level 1
             flatTasks.push({ title: group.title, is_parent: true, level: 1, words: 0 });
             group.children.forEach(child => {
-                // [核心修改] 移除 if (!child.isParent) 判断
                 // 无论是否为父节点，只要大纲里有，都发送给后端
-                // 如果是中间节点(如 1.1)，字数通常为0，后端会只生成标题
                 flatTasks.push({ 
                     title: child.text, 
-                    is_parent: false, // 统一设为 false，让后端进入处理循环
+                    is_parent: false, 
                     words: child.words || 0, // 如果是父节点，字数通常是0
                     use_data: child.useData,
-                    level: child.level || 2 // [新增] 传递层级信息(默认为2)
+                    level: child.level || 2 
                 });
             });
-        });
-    });
+        }); 
         let tasksToSend = flatTasks;
         if (isResuming) {
             tasksToSend = flatTasks.filter(task => {

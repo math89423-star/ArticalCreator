@@ -1,14 +1,14 @@
 import re
 import json
 import time
-from typing import List
+from typing import List, Dict, Generator
 from openai import OpenAI
 from typing import Dict, Generator
 from .reference import ReferenceManager
 from .word import TextCleaner
 
 
-def get_academic_thesis_prompt(target_words: int, ref_content_list: List[str], current_chapter_title: str, chapter_num: str) -> str:
+def get_academic_thesis_prompt(target_words: int, ref_content_list: List[str], current_chapter_title: str, chapter_num: str, has_user_data: bool = False) -> str:
     
     # ------------------------------------------------------------------
     # 1. 章节专属逻辑
@@ -17,11 +17,11 @@ def get_academic_thesis_prompt(target_words: int, ref_content_list: List[str], c
     is_cn_abstract = "摘要" in current_chapter_title
     is_en_abstract = "Abstract" in current_chapter_title and "摘要" not in current_chapter_title
 
-    
-    # 判断是否为需要图表的章节 (核心修复)
-    # 只有包含以下关键词的章节才启用图表
+    # 判断是否为需要图表的章节
+    # [修改点1] 逻辑升级：如果章节名包含特定词 OR 挂载了用户数据，则必须开启图表
     needs_charts = False
-    if chapter_num and any(k in current_chapter_title for k in ["实验", "测试", "分析", "结果", "数据", "设计", "实现", "验证", "Evaluation", "Analysis", "Design"]):
+    keywords = ["实验", "测试", "分析", "结果", "数据", "设计", "实现", "验证", "Evaluation", "Analysis", "Design"]
+    if (chapter_num and any(k in current_chapter_title for k in keywords)) or has_user_data:
         needs_charts = True
     
     # A. 摘要
@@ -72,11 +72,10 @@ def get_academic_thesis_prompt(target_words: int, ref_content_list: List[str], c
 3. **篇幅**: 350字左右。
 """
 
-# C. 国内外研究现状
+    # C. 国内外研究现状
     elif any(k in current_chapter_title for k in ["现状", "综述", "Review"]):
         if ref_content_list:
             first_ref = ref_content_list[0]
-            # Python逻辑修复：必须传入真实内容，而非ID占位符
             if len(ref_content_list) > 1:
                 other_refs_prompt = "\n".join([f"{{文献{i+2}}}: {ref}" for i, ref in enumerate(ref_content_list[1:])])
             else:
@@ -149,7 +148,7 @@ def get_academic_thesis_prompt(target_words: int, ref_content_list: List[str], c
 **要求**: 结合论文主题解释为什么用这个方法。
 """
 
-    # G. 通用正文 (新增数据分析要求)
+    # G. 通用正文
     else:
         section_rule = """
 **当前任务：撰写正文分析**
@@ -173,20 +172,42 @@ def get_academic_thesis_prompt(target_words: int, ref_content_list: List[str], c
     else:
         ref_instruction = "### **策略D: 引用策略**\n本章节无需强制引用列表中的文献，如需引用数据请使用真实知识。"
 
-    word_count_strategy = f"目标: **{target_words} 字**。" if not (is_en_abstract or is_cn_abstract) else "字数目标仅适用于中文部分。"
+    word_count_strategy = f"目标: **{target_words} 字**。请务必**一次性完成指定的字数保障不过多超出**，" 
+    if is_en_abstract or is_cn_abstract:
+        word_count_strategy = "字数遵循摘要标准。"
 
-    # ----------------- 策略F: 更新为 Python 绘图 -----------------
+    # ----------------- 策略F: Python 绘图 -----------------
     visuals_instruction = ""
+    
+    # 动态图表指令：如果是用户数据，强制可视化
+    user_data_chart_instruction = ""
+    if has_user_data:
+        user_data_chart_instruction = """
+        -   **用户数据强制可视化 (Mandatory)**: 
+            -   检测到【用户提供的真实数据】。**必须**将该数据转化为可视化的**表格**或**Python统计图**。
+            -   **严禁**仅仅在正文中用文字罗列数字，必须配合图表展示。
+            -   如果是时间序列数据 -> 画折线图；如果是占比 -> 画饼图；如果是对比 -> 画柱状图。
+        -   **去重检查**: 严禁重复生成相同内容的图表。如果数据已画过，请使用“**如图X所示**”引用并分析。
+        -  **数据源拓展**: 
+                -   **优先**: 使用【用户提供的真实数据】。
+                -   **补充**: 如果用户数据不足以支撑当前论点（如维度不够、时间跨度不足），**立即使用【联网检索补充数据】**进行绘图，不要强行复用不相关的用户数据。
+"""
+
     if needs_charts:
         visuals_instruction = f"""
 ### **策略F: 图表与数据可视化 (Python & Tables)**
-**本章节必须包含图表**。请按以下规范生成：
+**本章节必须包含图表**。{user_data_chart_instruction}
+请按以下规范生成：
+**决策规则 (Decision Rules) - 严禁冗余**:
+1.  **二选一原则**: 针对同一组数据，**只能**选择“Markdown表格”**或者**“Python统计图”其中一种形式，**严禁**对同一数据既画图又制表。
+    -   **选表格**: 当数据需要展示精确数值、或者包含大量文字分类时。
+    -   **选画图**: 当数据侧重于展示**趋势**（折线图）、**对比**（柱状图）或**占比**（饼图）时。
 
-1.  **表格**:
-    -   使用 Markdown 表格语法。
+2.  **表格**:
+    -   使用 Markdown 表格语法绘制三线表。
     -   **表名**: 在表格**上方**，格式：`**表{chapter_num}.X 表名**`。
 
-2.  **统计图 (Python Matplotlib) - 核心要求**:
+3.  **统计图 (Python Matplotlib) - 核心要求**:
     -   请编写一段**标准、无错、可直接运行的 Python 代码**。
     -   **代码块格式**: 使用 ` ```python ` 包裹。
     -   **关键要求 (CRITICAL)**: 
@@ -200,13 +221,13 @@ def get_academic_thesis_prompt(target_words: int, ref_content_list: List[str], c
         -   **库导入**: 必须在代码开头显式导入：`import matplotlib.pyplot as plt`, `import seaborn as sns`, `import pandas as pd`, `import numpy as np`。
         -   **数据自包含**: 数据必须在代码内部完整定义（使用 DataFrame 或字典），**严禁**读取外部文件。
         -   **格式规范**: 严禁使用全角空格（\\u3000）或不间断空格（NBSP），必须使用标准空格缩进。
-        -   **字体设置**: 必须包含 `plt.rcParams['font.sans-serif'] = ['SimHei', 'Arial Unicode MS', 'sans-serif']` 解决中文乱码。
+        -   **字体设置**: 必须包含 `plt.rcParams['font.sans-serif'] = ['SimHei']`,  `font = FontProperties(fname=r'C:\Windows\Fonts\simhei.ttf', size=12)`, `plt.rcParams['axes.unicode_minus'] = False`, 解决中文乱码，并且每个文本元素显式指定字体。
         -   **美观性**: 使用 `sns.set_theme(style="whitegrid")`，配色需符合学术规范（如深蓝、深红、灰度），避免过于花哨。
         -   **输出**: 最后**不需要** `plt.show()`。
     -   **图名**: 在代码块**下方**，格式：`**图{chapter_num}.X 图名**`。
 
-3.  **图文互动**: 
-    -   正文论述数据时，必须提及 “**如图{chapter_num}.X所示**”。
+4.  **图文互动**: 
+    -   正文论述数据时，必须提及 “**如图{chapter_num}.X所示**” 或 “**如表{chapter_num}.X所示**”。
     -   图表生成后，必须在正文中对图表反映的**趋势、拐点或异常值**进行简要分析，实现图文互证。
 """
     else:
@@ -221,14 +242,11 @@ def get_academic_thesis_prompt(target_words: int, ref_content_list: List[str], c
 1.  **段落缩进**: **所有段落开头必须包含两个全角空格（　　）**。
 2.  **禁用列表**: 严禁使用 Markdown 列表，必须写成连贯段落（研究方法除外）。
 
-
 ### **策略B: 数据与谦抑性 (CRITICAL)**
 1.  **字体规范**: **所有数字、字母、标点必须使用半角字符 (Half-width)**。
-    -   正确: 2023, 50%, "Method"
-    -   错误: ２０２３, ５０％, “Method”
 2.  **数据优先级**: 
     -   **最高优先级**: 如果输入中包含【用户提供的真实数据】，必须**无条件基于该数据**进行分析与制图，**严禁篡改数值**。
-    -   **次级来源**: 仅在用户未提供数据时，才使用【联网检索事实】或通用学术知识。**严禁将【联网检索事实】写入正文中**。
+    -   **次级来源**: 仅在用户未提供数据时，才使用【联网检索事实】或通用学术知识。
 3.  **严禁夸大**: 
     -   **禁止**: “填补空白”、“国内首创”、“完美解决”。
     -   **必须用**: “丰富了...视角”、“提供了实证参考”、“优化了...”。
@@ -256,10 +274,14 @@ def get_academic_thesis_prompt(target_words: int, ref_content_list: List[str], c
     -   错误示例：`### 1.1 背景分析`
     -   正确操作：直接开始写背景分析的**正文段落**。
 2.  **禁止越界**: **严禁**撰写下一个章节的内容。只关注当前章节：**“{current_chapter_title}”**。
-3.  **禁止分点**: 除非是“研究方法”章节，否则严禁使用 `1.` `2.` 或 `*` 进行罗列，请用“首先、其次、此外”等连接词写成连贯段落。
+3.  **禁止分点**: 除非是“研究方法”章节，否则严禁使用 `1.` `2.` 或 `*` 进行罗列。使用学术逻辑连接词，例如：“值得注意的是”、“与此同时”、“进一步分析表明”、“从...角度来看”、“由此推导”等，或通过因果逻辑自然衔接。
+4.  **严禁元数据标识**: 
+    -   **绝对禁止**在正文中输出“(空两格)”、“(接上文)”、“(此处插入...)”等括号说明文字。
+    -   **禁止**使用省略号(...)作为段落开头。直接开始论述即可。
 
 请开始写作。
 """
+
 
 class PaperAutoWriter:
     def __init__(self, api_key: str, base_url: str, model: str):
@@ -328,34 +350,38 @@ class PaperAutoWriter:
         facts_context = ""
         use_data_flag = chapter.get('use_data', False)
 
-        # 仅对非摘要、非结论章节启用数据挂载
-        if "摘要" not in sec_title and "结论" not in sec_title:
-            # 场景1：开关开启 且 有用户数据 -> 挂载用户数据
-            if use_data_flag and custom_data and len(custom_data.strip()) > 5:
+        # 仅对非摘要、非结论章节，且【开关开启】时，才启用数据挂载
+        #                 ↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓
+        if "摘要" not in sec_title and "结论" not in sec_title and use_data_flag:
+            
+            # 1. 挂载用户数据
+            if custom_data and len(custom_data.strip()) > 5:
                 yield json.dumps({'type': 'log', 'msg': f'   - [已启用] 挂载用户真实数据...'})
                 cleaned_data = TextCleaner.convert_cn_numbers(custom_data)
-                facts_context = f"\n【用户提供的真实数据 (最高优先级)】:\n{cleaned_data}\n\n请严格基于以上数据进行论述和分析。"
+                facts_context += f"\n【用户提供的真实数据 (最高优先级)】:\n{cleaned_data}\n"
             
-            # 场景2：开关开启 但 无用户数据 -> 尝试联网
-            elif use_data_flag:
-                yield json.dumps({'type': 'log', 'msg': f'   - [已启用] 正在检索网络数据...'})
-                facts = self._research_phase(f"{title} - {sec_title}")
-                if facts:
-                    facts = TextCleaner.convert_cn_numbers(facts)
-                    facts_context = f"\n【联网检索事实库】:\n{facts}"
-            
-            # 场景3：开关关闭 -> pass
+            # 2. 强制联网补充数据 (双轨制：有用户数据也搜，没用户数据也搜)
+            yield json.dumps({'type': 'log', 'msg': f'   - [补充] 正在联网检索更多数据以丰富论点...'})
+            facts = self._research_phase(f"{title} - {sec_title} 统计数据 现状分析")
+            if facts:
+                facts = TextCleaner.convert_cn_numbers(facts)
+                facts_context += f"\n【联网检索补充数据 (当用户数据不足时使用)】:\n{facts}\n"
+                
+            facts_context += "\n请综合使用上述数据。如果用户数据已在之前章节使用过，请优先使用联网补充数据进行新的图表制作。"
         
         return facts_context
 
     def _refine_content(self, raw_content: str, target: int, sec_title: str, sys_prompt: str, user_prompt: str) -> Generator[str, None, str]:
         """智能扩写/精简逻辑 (Yields logs, returns refined content)"""
         current_len = len(re.sub(r'\s', '', raw_content))
+
+        if target < 300:
+            return raw_content
         
         # 摘要章节不进行字数优化
         if "摘要" not in sec_title and "Abstract" not in sec_title:
             # 扩写逻辑
-            if current_len < target * 0.6:
+            if current_len < target * 0.4:
                 yield json.dumps({'type': 'log', 'msg': f'   - 字数优化: 正在扩充内容 ({current_len}/{target})...'})
                 expand_prompt = (
                     f"当前字数({current_len})与目标({target})差距较大。\n"
@@ -380,7 +406,7 @@ class PaperAutoWriter:
                     print(f"扩写失败: {e}")
             
             # 精简逻辑
-            elif current_len > target * 1.4:
+            elif current_len > target * 2.5:
                 yield json.dumps({'type': 'log', 'msg': f'   - 字数优化: 正在精简内容 ({current_len}/{target})...'})
                 condense_prompt = (
                     f"当前字数({current_len})远超目标({target})。\n"
@@ -407,16 +433,25 @@ class PaperAutoWriter:
         return raw_content
 
     def _clean_and_format(self, raw_content: str, sec_title: str, ref_manager) -> str:
-        """清洗、引用处理、格式化"""
         # 1. 摘要标题清洗
         if "摘要" in sec_title or "Abstract" in sec_title:
             raw_content = re.sub(r'^#+\s*(摘要|Abstract)\s*', '', raw_content, flags=re.IGNORECASE).strip()
-            if raw_content.startswith("摘要") and len(raw_content) < 10:
-                raw_content = raw_content[2:].strip()
-            if raw_content.startswith("Abstract") and len(raw_content) < 15:
-                raw_content = raw_content[8:].strip()
+            if raw_content.startswith("摘要") and len(raw_content) < 10: raw_content = raw_content[2:].strip()
+            if raw_content.startswith("Abstract") and len(raw_content) < 15: raw_content = raw_content[8:].strip()
 
-        # 2. 通用标题重复清洗 (正文第一行如果是标题则去除)
+        # [新增] 强力清洗 LLM 的“元数据痕迹” (全局替换，不限于开头)
+        # 去除 (接上文), (空两格), (此处...), (本节...)
+        dirty_patterns = [
+            r'[\(（]接上文[\)）]', r'[\(（]紧接上文[\)）]', 
+            r'[\(（]空两格[\)）]', r'[\(（]空格[\)）]', r'[\(（]空两格正文[\)）]',
+            r'[\(（]此处.*?[\)）]', # 去除 (此处应补充...)
+            r'^接上文[：:,，]',      # 去除开头的 接上文：
+            r'^\.\.\.'             # 去除开头的 ...
+        ]
+        for pattern in dirty_patterns:
+            raw_content = re.sub(pattern, '', raw_content, flags=re.IGNORECASE)
+
+        # 2. 通用标题重复清洗
         temp_lines = raw_content.strip().split('\n')
         if temp_lines:
             first_line_core = re.sub(r'[#*\s]', '', temp_lines[0])
@@ -433,11 +468,9 @@ class PaperAutoWriter:
         formatted_lines = []
         for line in lines:
             line = line.strip()
-            # 移除幻觉空格文字
+            # 二次清洗行首残留
             line = re.sub(r'^[\(（]空两格[\)）]', '', line) 
-            line = re.sub(r'^空格', '', line)
             
-            # 排除不需要缩进的行 (缩进、标题、表格、代码块)
             if (line and not line.startswith('　　') and not line.startswith('#') and 
                 not line.startswith('|') and not line.startswith('```') and "import" not in line and "plt." not in line):
                 line = '　　' + line 
@@ -492,18 +525,21 @@ class PaperAutoWriter:
             except StopIteration as e:
                 facts_context = e.value
 
-            # 6. 构建 Prompt
+            # 6. [核心修改] 检测是否启用了用户数据
+            has_user_data = "用户提供的真实数据" in facts_context
+
+            # 7. 构建 Prompt (传递 has_user_data 参数)
             if "摘要" in sec_title or "Abstract" in sec_title:
-                sys_prompt = get_academic_thesis_prompt(target, [r[1] for r in assigned_refs], sec_title, chapter_num)
+                sys_prompt = get_academic_thesis_prompt(target, [r[1] for r in assigned_refs], sec_title, chapter_num, has_user_data)
                 user_prompt = f"题目：{title}\n章节：{sec_title}\n要求：请直接输出摘要的正文内容，严禁输出“### 摘要”或“### Abstract”等标题。请严格按照“摘要正文 + 关键词”的格式输出。"
             else:
-                sys_prompt = get_academic_thesis_prompt(target, [r[1] for r in assigned_refs], sec_title, chapter_num)
+                sys_prompt = get_academic_thesis_prompt(target, [r[1] for r in assigned_refs], sec_title, chapter_num, has_user_data)
                 user_prompt = f"题目：{title}\n章节：{sec_title}\n前文：{context[-600:]}\n字数：{target}\n{facts_context}"
 
-            # 7. 调用 LLM
+            # 8. 调用 LLM
             raw_content = self._call_llm(sys_prompt, user_prompt)
 
-            # 8. 优化内容 (扩写/精简 Generator 迭代)
+            # 9. 优化内容 (扩写/精简 Generator 迭代)
             refine_gen = self._refine_content(raw_content, target, sec_title, sys_prompt, user_prompt)
             try:
                 while True:
@@ -512,10 +548,10 @@ class PaperAutoWriter:
             except StopIteration as e:
                 raw_content = e.value
 
-            # 9. 清洗与格式化
+            # 10. 清洗与格式化
             final_content = self._clean_and_format(raw_content, sec_title, ref_manager)
 
-            # 10. 输出结果
+            # 11. 输出结果
             section_md = f"{header_prefix} {sec_title}\n\n{final_content}\n\n"
             full_content += section_md
             context = final_content

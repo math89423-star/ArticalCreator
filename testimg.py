@@ -1,105 +1,47 @@
-# import matplotlib.pyplot as plt
-# import pandas as pd
-# import numpy as np
-
-# # 设置中文字体，避免中文显示乱码（虽然标题是英文，保留该配置更通用）
-# plt.rcParams['font.sans-serif'] = ['SimHei', 'Arial Unicode MS', 'sans-serif']
-
-# # 定义评估指标、模型名称和对应的性能数据
-# metrics = ['Accuracy', 'Precision', 'Recall', 'F1-Score', 'AUC']
-# models = ['Logistic Regression', 'Random Forest', 'XGBoost', 'CNN']
-
-# data = {
-# 'Logistic Regression': [0.92, 0.89, 0.87, 0.88, 0.94],
-# 'Random Forest': [0.96, 0.94, 0.91, 0.925, 0.98],
-# 'XGBoost': [0.97, 0.95, 0.93, 0.94, 0.985],
-# 'CNN': [0.98, 0.96, 0.95, 0.955, 0.99]
-# }
-
-# # 计算雷达图的角度（闭合雷达图需要首尾相连）
-# angles = np.linspace(0, 2 * np.pi, len(metrics), endpoint=False).tolist()
-# angles += angles[:1]# 追加第一个角度，让雷达图闭合
-
-# # 创建极坐标子图，设置画布尺寸
-# fig, ax = plt.subplots(figsize=(8, 8), subplot_kw=dict(projection='polar'))
-
-# # 遍历每个模型，绘制对应的雷达图曲线并填充
-# for model in models:
-# values = data[model]
-# values += values[:1]# 追加第一个数值，让曲线闭合
-# ax.plot(angles, values, 'o-', linewidth=2, label=model)
-# ax.fill(angles, values, alpha=0.1)# 填充区域，透明度0.1
-
-# # 配置雷达图样式
-# ax.set_yticklabels([])# 隐藏径向刻度标签（避免数值重叠）
-# ax.set_xticks(angles[:-1])# 设置角度刻度（去掉最后一个重复的角度）
-# ax.set_xticklabels(metrics)# 角度刻度对应评估指标
-# ax.set_title('Model Performance Comparison on Phishing Detection', size=14, pad=20)# 图表标题
-# ax.legend(loc='upper right', bbox_to_anchor=(1.3, 1.0))# 图例位置调整
-
-# # 自动调整布局，避免元素重叠
-# plt.tight_layout()
-# # 显示图表（本地运行必须添加，Jupyter环境可省略）
-# plt.show()
-
-
 import matplotlib.pyplot as plt
-
+import seaborn as sns
 import pandas as pd
-
 import numpy as np
+from matplotlib.font_manager import FontProperties  # 导入字体管理工具
 
+# ========== 强制绑定Windows系统SimHei字体（彻底解决中文方框） ==========
+# 直接指定SimHei字体文件路径（Windows系统默认路径）
+font = FontProperties(fname=r'C:\Windows\Fonts\simhei.ttf', size=12)
+# 全局配置+显式字体双保险
+plt.rcParams['font.sans-serif'] = ['SimHei']
+plt.rcParams['axes.unicode_minus'] = False  # 解决负号显示异常
+# ==================================================================
 
+sns.set_theme(style="whitegrid")
 
-plt.rcParams['font.sans-serif'] = ['SimHei', 'Arial Unicode MS', 'sans-serif']
-
-
-
-metrics = ['Accuracy', 'Precision', 'Recall', 'F1-Score', 'AUC']
-
-models = ['Logistic Regression', 'Random Forest', 'XGBoost', 'CNN']
-
-
-
+# 构建数据（修正全角空格，统一缩进）
 data = {
-
-'Logistic Regression': [0.92, 0.89, 0.87, 0.88, 0.94],
-
-'Random Forest': [0.96, 0.94, 0.91, 0.925, 0.98],
-
-'XGBoost': [0.97, 0.95, 0.93, 0.94, 0.985],
-
-'CNN': [0.98, 0.96, 0.95, 0.955, 0.99]
-
+    '年份': ['2022', '2023', '2024'],
+    '营业总收入（亿元）': [62.92, 78.42, 85.11],
+    '归属净利润（亿元）': [8.01, 13.69, 21.86]
 }
+df = pd.DataFrame(data)
 
+# 创建画布和主坐标轴
+fig, ax1 = plt.subplots(figsize=(10, 6))
+# 绘制营业总收入折线（显式指定字体）
+ax1.plot(df['年份'], df['营业总收入（亿元）'], marker='o', linewidth=2, label='营业总收入', color='#1f77b4')
+ax1.set_xlabel('年份', fontproperties=font, fontsize=12)  # 绑定字体
+ax1.set_ylabel('营业总收入（亿元）', fontproperties=font, fontsize=12, color='#1f77b4')  # 绑定字体
+ax1.tick_params(axis='y', labelcolor='#1f77b4')
 
+# 创建次坐标轴
+ax2 = ax1.twinx()
+# 绘制归属净利润折线（显式指定字体）
+ax2.plot(df['年份'], df['归属净利润（亿元）'], marker='s', linewidth=2, label='归属净利润', color='#d62728')
+ax2.set_ylabel('归属净利润（亿元）', fontproperties=font, fontsize=12, color='#d62728')  # 绑定字体
+ax2.tick_params(axis='y', labelcolor='#d62728')
 
-angles = np.linspace(0, 2 * np.pi, len(metrics), endpoint=False).tolist()
-
-angles += angles[:1]
-
-
-
-fig, ax = plt.subplots(figsize=(8, 8), subplot_kw=dict(projection='polar'))
-
-for model in models:
-    values = data[model]
-    values += values[:1]
-    ax.plot(angles, values, 'o-', linewidth=2, label=model)
-    ax.fill(angles, values, alpha=0.1)
-
-
-
-ax.set_yticklabels([])
-
-ax.set_xticks(angles[:-1])
-
-ax.set_xticklabels(metrics)
-
-ax.set_title('Model Performance Comparison on Phishing Detection', size=14, pad=20)
-
-ax.legend(loc='upper right', bbox_to_anchor=(1.3, 1.0))
+# 设置标题（显式指定字体）
+plt.title('森麒麟2022-2024年营收与净利润趋势', fontproperties=font, fontsize=14, pad=20)  # 绑定字体
+# 设置图例（显式指定字体）
+ax1.legend(prop=font, loc='upper left')  # 图例绑定字体
+ax2.legend(prop=font, loc='upper right')  # 图例绑定字体
 
 plt.tight_layout()
 plt.show()

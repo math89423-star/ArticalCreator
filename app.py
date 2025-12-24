@@ -15,6 +15,8 @@ import pandas as pd  # 处理 Excel/CSV
 import pypdf         # 处理 PDF
 import docx          # 处理 Word .docx
 
+# 引入 waitress (请确保 pip install waitress)
+from waitress import serve
 from flask import Flask, render_template, request, Response, stream_with_context, jsonify, send_file, session
 from utils.word import MarkdownToDocx
 from utils.prompts import PaperAutoWriter
@@ -58,10 +60,11 @@ VALID_KEYS = set(load_keys())
 def is_valid_key(key):
     return key in VALID_KEYS
 
-# --- 任务管理器 ---
+# --- 任务管理器 (优化版) ---
 class TaskManager:
     def __init__(self):
-        self._lock = threading.Lock()
+        # 改用 RLock (可重入锁)，更加安全，防止自身死锁
+        self._lock = threading.RLock()
         self._user_tasks = defaultdict(dict)
 
     def start_task(self, user_id, task_id):
@@ -70,7 +73,7 @@ class TaskManager:
             self._user_tasks[user_id][task_id] = {
                 'status': 'running',
                 'events': [],      # 消息缓存队列
-                'created_at': os.times().elapsed,
+                'created_at': time.time(),
                 'last_read_idx': 0 
             }
 
@@ -87,7 +90,11 @@ class TaskManager:
             if not task:
                 return [], 'stopped'
             
-            # 获取从 start_index 开始的所有新消息
+            # 安全获取切片，即使 index 越界也不会报错
+            events_len = len(task['events'])
+            if start_index >= events_len:
+                return [], task['status']
+                
             new_events = task['events'][start_index:]
             return new_events, task['status']
 
@@ -103,7 +110,7 @@ class TaskManager:
 task_manager = TaskManager()
 
 # ==============================================================================
-# 多格式文件内容提取工具 (已修改为支持流对象)
+# 多格式文件内容提取工具
 # ==============================================================================
 def extract_file_content(file_stream, filename) -> str:
     """
@@ -185,7 +192,9 @@ def background_worker(writer, task_id, title, chapters, references, text_custom_
             
             file_extracted_text = ""
             for file_info in raw_files_data:
-                # file_info 包含 {'name': filename, 'content': BytesIO对象}
+                # 🚀 关键：每解析一个文件，主动休眠 10ms 释放 GIL 锁，防止卡死其他正在生成的任务
+                time.sleep(0.01) 
+                
                 try:
                     extracted = extract_file_content(file_info['content'], file_info['name'])
                     file_extracted_text += extracted + "\n\n"
@@ -210,7 +219,9 @@ def background_worker(writer, task_id, title, chapters, references, text_custom_
         error_msg = json.dumps({'type': 'log', 'msg': f'❌ 后台任务异常: {str(e)}'})
         task_manager.append_event(user_id, task_id, f"data: {error_msg}\n\n")
     finally:
-        if task_manager.get_status(user_id, task_id) == 'running':
+        # 无论成功还是失败，都要确保将状态标记为完成或停止
+        current_status = task_manager.get_status(user_id, task_id)
+        if current_status == 'running':
             task_manager.set_status(user_id, task_id, 'completed')
 
 # ==============================================================================
@@ -269,15 +280,13 @@ def generate_start():
     task_id = request.form.get('task_id')
     initial_context = request.form.get('initial_context', '')
     
-    # 【关键修改】只读取文件流到内存，不进行解析（解析耗时，会阻塞主线程）
+    # 读取文件流到内存
     uploaded_files = request.files.getlist('data_files')
     raw_files_data = []
     
     if uploaded_files:
         for file in uploaded_files:
             if file.filename:
-                # 将文件内容读入 BytesIO，这样就可以在后台线程中重复读取了
-                # request.files 是临时文件流，请求结束后会关闭，所以必须 copy 出来
                 file_content = io.BytesIO(file.read())
                 raw_files_data.append({
                     'name': file.filename, 
@@ -291,7 +300,7 @@ def generate_start():
     def check_status_func():
         return task_manager.get_status(user_id, task_id)
 
-    # 启动后台线程 (参数中增加了 raw_files_data)
+    # 启动后台线程
     t = threading.Thread(
         target=background_worker,
         args=(writer, task_id, title, json.loads(raw_chapters), references, text_custom_data, raw_files_data, check_status_func, initial_context, user_id)
@@ -299,7 +308,6 @@ def generate_start():
     t.daemon = True 
     t.start()
 
-    # 立即返回，UI不会卡顿
     return jsonify({"status": "success", "msg": "Task started in background"})
 
 @app.route('/stream_progress')
@@ -308,21 +316,17 @@ def stream_progress():
     
     user_id = request.headers.get('X-User-ID')
     task_id = request.args.get('task_id')
-    try: 
-        last_event_index = int(request.args.get('last_index', 0))
-    except: 
-        last_event_index = 0
+    try: last_event_index = int(request.args.get('last_index', 0))
+    except: last_event_index = 0
 
     def event_stream():
         current_idx = last_event_index
-        idle_counter = 0
         
         while True:
             # 获取新消息
             events, status = task_manager.get_events_from(user_id, task_id, current_idx)
             
             if events:
-                idle_counter = 0
                 for event in events:
                     event_str = str(event)
                     if not event_str.endswith('\n\n'):
@@ -334,19 +338,19 @@ def stream_progress():
                     yield f"data: {json.dumps({'type': 'done'})}\n\n"
                     break
                 
-                # 心跳包频率加快到 0.5秒
+                # 心跳包频率
                 yield ": keep-alive\n\n"
                 time.sleep(0.5) 
 
-    # 禁用 Nginx 缓存，确保流式输出
+    # 禁用缓存
     response = Response(stream_with_context(event_stream()), content_type='text/event-stream')
     response.headers['X-Accel-Buffering'] = 'no'
     response.headers['Cache-Control'] = 'no-cache'
-    response.headers['Connection'] = 'keep-alive'
+
     
     return response
 
-# --- 管理员相关接口保持不变 ---
+# --- 管理员相关接口 ---
 @app.route('/admin')
 def admin_page(): return render_template('admin.html')
 
@@ -377,9 +381,21 @@ def manage_keys():
         VALID_KEYS.add(new_key); save_keys(list(VALID_KEYS))
         return jsonify({"status": "success", "key": new_key})
 
+# ==============================================================================
+# 启动入口 (核心修改)
+# ==============================================================================
 if __name__ == '__main__':
+    # 确保存储文件存在
     if not os.path.exists(KEYS_FILE):
         VALID_KEYS.add("test_vip_888")
         save_keys(list(VALID_KEYS))
-    # 开启多线程模式
-    app.run(debug=True, host="0.0.0.0", port=8001, threaded=True)
+    
+    print("🚀 服务器正在启动...")
+    print("⚠️  请访问 http://192.168.0.35:8001 (请根据实际IP访问)")
+    print("✅ 已启用 Waitress 高并发模式，支持多任务同时运行")
+    
+    # ❌ 不再使用 app.run()，它不适合并发 SSE
+    # app.run(debug=True, host="0.0.0.0", port=8001, threaded=True)
+    
+    # ✅ 使用 Waitress 启动，配置 10 个处理线程
+    serve(app, host="0.0.0.0", port=8001, threads=100, connection_limit=200, channel_timeout=300)

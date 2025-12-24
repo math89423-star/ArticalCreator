@@ -255,6 +255,7 @@
     let isPaused = false;
     let abortController = null; // 用于强制终止请求
     let selectedFiles = [];     // 存储上传的文件对象
+    let currentEventIndex = 0;
 
     // --- 1. 用户登录与鉴权 ---
     window.onload = async function() {
@@ -269,14 +270,40 @@
                 if (res.ok) {
                     currentUserId = storedUser;
                     initWorkspace();
+                    
+                    // [新增] 页面加载时，检查是否有未完成的任务
+                    const activeTaskId = localStorage.getItem('active_task_id');
+                    if (activeTaskId) {
+                        console.log("检测到未完成的任务，正在恢复连接...", activeTaskId);
+                        // 恢复上次的 UI 状态和内容
+                        restoreTaskState(activeTaskId);
+                    }
                 } else {
-                    logout(); // 卡密失效
+                    logout();
                 }
             } catch(e) { console.error("Auth check failed", e); }
         } else {
             document.getElementById('loginOverlay').style.display = 'flex';
         }
     };
+
+    function restoreTaskState(taskId) {
+        currentTaskId = taskId;
+        // 恢复 UI 锁定状态
+        const btn = document.getElementById('btnSubmit');
+        const ctrlDiv = document.getElementById('controlButtons');
+        btn.disabled = true;
+        ctrlDiv.style.display = 'block';
+        document.getElementById('btnPause').style.display = 'inline-block';
+        document.getElementById('btnStop').style.display = 'inline-block';
+        toggleInputs(true);
+        
+        // 尝试从本地草稿恢复已生成的文本（防止刷新后内容清空）
+        // 注意：loadDraft 已经在 initWorkspace 中调用过了，这里重点是重新建立连接
+        
+        // 开始订阅进度流
+        subscribeTask(taskId);
+    }
 
     async function handleLogin() {
         const inputId = document.getElementById('userIdInput').value.trim();
@@ -308,6 +335,84 @@
             msgSpan.innerText = "网络请求错误"; msgSpan.className = "text-danger";
             btn.disabled = false; btn.innerText = "验证并登录";
         }
+    }
+    // [新增] 订阅任务进度 (支持断点重连、增量读取)
+    async function subscribeTask(taskId) {
+        const resultDiv = document.getElementById('resultContent');
+        
+        // 创建新的控制器用于中断 fetch 流
+        if (abortController) abortController.abort();
+        abortController = new AbortController();
+
+        try {
+            // 发起 GET 请求到新的进度接口
+            // last_index 参数告诉后端：“我上次读到哪了，请把后面的发给我”
+            const response = await authenticatedFetch(`/stream_progress?task_id=${taskId}&last_index=${currentEventIndex}`, {
+                method: 'GET',
+                signal: abortController.signal
+            });
+
+            if (!response.ok) {
+                // 如果任务已经不存在或鉴权失败
+                throw new Error("无法连接进度流 (404/401)");
+            }
+
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = '';
+
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split('\n\n');
+                buffer = lines.pop(); 
+
+                for (const line of lines) {
+                    const trimmed = line.trim();
+                    if (trimmed.startsWith('data: ')) {
+                        try {
+                            const data = JSON.parse(trimmed.replace('data: ', ''));
+                            
+                            // [关键] 每成功处理一条消息，索引+1
+                            currentEventIndex++; 
+
+                            if (data.type === 'log') {
+                                appendLog(data.msg); 
+                            } else if (data.type === 'content') {
+                                fullMarkdownText += data.md;
+                                resultDiv.innerHTML = marked.parse(fullMarkdownText);
+                                saveDraft(); // 实时保存到本地
+                            } else if (data.type === 'done') {
+                                finishTask();
+                                return; // 结束循环
+                            }
+                        } catch (e) { console.error("Parse Error", e); }
+                    }
+                }
+            }
+        } catch (err) {
+            if (err.name === 'AbortError') {
+                console.log('用户手动停止监听');
+            } else {
+                // 网络错误或后端重启导致的断开，自动重试
+                appendLog(`⚠️ 连接断开 (${err.message})，3秒后尝试重连...`, 'warn');
+                setTimeout(() => subscribeTask(taskId), 3000);
+            }
+        }
+    }
+
+    // 任务完成清理
+    function finishTask() {
+        const btn = document.getElementById('btnSubmit');
+        btn.disabled = false;
+        saveDraft();
+        appendLog("🎉 生成完成！", 'info'); 
+        alert("生成完成！");
+        toggleInputs(false);
+        abortController = null;
+        localStorage.removeItem('active_task_id'); // 任务完成，清除ID，防止下次刷新又重连
     }
 
     function initWorkspace() {
@@ -703,16 +808,17 @@
         if(title) { parsedStructure.push({ title: title, children: [{ text: title + " 概述", isParent: false, words: 500 }] }); renderConfigArea(); }
     }
 
-    // --- 提交与控制 ---
+
+    // [核心修改] 提交逻辑：仅负责启动任务
     document.getElementById('paperForm').onsubmit = async (e) => {
         e.preventDefault();
         saveDraft();
         
-        // 1. 中断旧请求
+        // 清理旧的控制器
         if (abortController) { abortController.abort(); }
         abortController = new AbortController();
 
-        // 2. 断点续传检查
+        // 1. 断点续传检查 (针对已有文本内容的逻辑)
         let isResuming = false;
         let existingContext = "";
         if (fullMarkdownText && fullMarkdownText.trim().length > 50) {
@@ -725,25 +831,27 @@
             }
         }
 
+        // 2. 生成新任务 ID 并持久化
         currentTaskId = generateUUID();
+        localStorage.setItem('active_task_id', currentTaskId); // 存入本地，防刷新丢失
+        currentEventIndex = 0; // 重置消息索引
         isPaused = false;
-        
-        // 3. 构建任务
+
+        // 3. 构建任务列表
         const flatTasks = [];
         parsedStructure.forEach(group => {
-            // 一级大章 (如 "第一章") -> 对应 Level 1
             flatTasks.push({ title: group.title, is_parent: true, level: 1, words: 0 });
             group.children.forEach(child => {
-                // 无论是否为父节点，只要大纲里有，都发送给后端
                 flatTasks.push({ 
                     title: child.text, 
                     is_parent: false, 
-                    words: child.words || 0, // 如果是父节点，字数通常是0
+                    words: child.words || 0, 
                     use_data: child.useData,
                     level: child.level || 2 
                 });
             });
-        }); 
+        });
+        
         let tasksToSend = flatTasks;
         if (isResuming) {
             tasksToSend = flatTasks.filter(task => {
@@ -758,10 +866,7 @@
 
         // 4. UI 锁定
         const btn = document.getElementById('btnSubmit');
-        const logArea = document.getElementById('logArea');
-        const resultDiv = document.getElementById('resultContent');
         const ctrlDiv = document.getElementById('controlButtons');
-        
         btn.disabled = true;
         ctrlDiv.style.display = 'block';
         document.getElementById('btnPause').innerText = "⏸ 暂停";
@@ -769,69 +874,36 @@
         document.getElementById('btnStop').style.display = 'inline-block';
         toggleInputs(true);
 
+        // 5. 准备表单数据
         const formData = new FormData();
         formData.append('title', document.getElementById('paperTitle').value);
         formData.append('references', document.getElementById('references').value);
         formData.append('custom_data', document.getElementById('customData').value);
-        
-        // 添加文件
         selectedFiles.forEach(file => { formData.append('data_files', file); });
-
         formData.append('chapter_data', JSON.stringify(tasksToSend));
         formData.append('task_id', currentTaskId);
         formData.append('initial_context', existingContext); 
 
-        // 5. 发起请求
+        // 6. 发送启动指令 (POST)
         try {
+            // 注意：这里不再处理流，而是等待“启动成功”的 JSON 响应
             const response = await authenticatedFetch('/generate', { 
                 method: 'POST', 
-                body: formData, 
-                signal: abortController.signal // 绑定信号
+                body: formData
             });
             
-            const reader = response.body.getReader();
-            const decoder = new TextDecoder();
-            let buffer = '';
-
-            while (true) {
-                const { done, value } = await reader.read();
-                if (done) break;
-                
-                buffer += decoder.decode(value, { stream: true });
-                const lines = buffer.split('\n\n');
-                buffer = lines.pop(); // 保留不完整包
-
-                for (const line of lines) {
-                    const trimmed = line.trim();
-                    if (trimmed.startsWith('data: ')) {
-                        try {
-                            const data = JSON.parse(trimmed.replace('data: ', ''));
-                            if (data.type === 'log') {
-                                appendLog(data.msg); 
-                            } else if (data.type === 'content') {
-                                fullMarkdownText += data.md;
-                                resultDiv.innerHTML = marked.parse(fullMarkdownText);
-                                saveDraft(); 
-                            } else if (data.type === 'done') {
-                                btn.disabled = false;
-                                saveDraft();
-                                appendLog("🎉 生成完成！", 'info'); 
-                                alert("生成完成！");
-                                toggleInputs(false);
-                                abortController = null;
-                            }
-                        } catch (e) {}
-                    }
-                }
+            if (response.ok) {
+                appendLog("✅ 任务已在后台启动，正在建立长连接...", 'info');
+                // 启动成功后，立即调用监听函数
+                subscribeTask(currentTaskId);
+            } else {
+                throw new Error("服务器启动任务失败，请检查卡密或重试。");
             }
         } catch (err) {
-            if (err.name === 'AbortError') {
-                console.log('用户停止'); // 静默处理
-            } else {
-                appendLog("❌ 异常: " + err, 'error');
-                btn.disabled = false;
-                toggleInputs(false);
-            }
+            appendLog("❌ 启动异常: " + err, 'error');
+            btn.disabled = false;
+            toggleInputs(false);
+            localStorage.removeItem('active_task_id'); // 启动失败，清除残留ID
         }
     };
 
@@ -855,19 +927,23 @@
     
     async function stopTask() { 
         if(!confirm("确定停止？")) return;
-        // 前端强制终止
+        
+        // 1. 中断前端监听
         if (abortController) {
             abortController.abort();
             abortController = null;
         }
-        // 后端通知
+        
+        // 2. 通知后端停止线程
         await authenticatedFetch('/control', {method: 'POST', body: JSON.stringify({ task_id: currentTaskId, action: 'stop' })});
         
+        // 3. 清理 UI 和 缓存
         document.getElementById('btnSubmit').disabled = false;
         document.getElementById('btnPause').style.display = 'none';
         document.getElementById('btnStop').style.display = 'none';
         appendLog("⏹ 任务已终止", 'error');
         toggleInputs(false);
+        localStorage.removeItem('active_task_id'); // [关键] 清除ID
     }
 
     function createNewPaper() {
@@ -923,9 +999,13 @@
             customData: document.getElementById('customData').value,
             content: fullMarkdownText,
             structure: parsedStructure,
-            timestamp: new Date().toISOString()
+            timestamp: new Date().toISOString(),
+            // [新增] 保存当前读取到的消息下标，防止刷新后重复拉取旧消息
+            eventIndex: currentEventIndex 
         };
         localStorage.setItem(`draft_${currentUserId}_current`, JSON.stringify(draft));
+        
+        // 历史记录逻辑保持不变
         let history = JSON.parse(localStorage.getItem(`history_${currentUserId}`) || "[]");
         const idx = history.findIndex(h => h.title === draft.title);
         if (idx > -1) history[idx] = draft;
@@ -942,6 +1022,12 @@
             document.getElementById('outlineRaw').value = draft.outline || "";
             document.getElementById('references').value = draft.refs || "";
             document.getElementById('customData').value = draft.customData || "";
+            
+            // [新增] 恢复进度指针 (如果没有则默认为0)
+            if (draft.eventIndex !== undefined) {
+                currentEventIndex = draft.eventIndex;
+            }
+
             if (draft.structure && draft.structure.length > 0) {
                 parsedStructure = draft.structure;
                 renderConfigArea();
@@ -950,13 +1036,18 @@
             if (draft.content && draft.content.trim().length > 0) {
                 fullMarkdownText = draft.content;
                 document.getElementById('resultContent').innerHTML = marked.parse(fullMarkdownText);
-                document.getElementById('controlButtons').style.display = 'block';
-                document.getElementById('btnSubmit').disabled = true;
-                toggleInputs(true);
+                
+                // 只有在非生成状态下才显示控制按钮 (生成中由 restoreTaskState 控制)
+                // 如果页面刚刷新，restoreTaskState 会稍后运行并接管 UI
+                if (!localStorage.getItem('active_task_id')) {
+                    document.getElementById('controlButtons').style.display = 'block';
+                    document.getElementById('btnSubmit').disabled = true;
+                    toggleInputs(true);
+                }
             }
         }
     }
-
+    
     function showHistory() {
         const listEl = document.getElementById('historyList');
         listEl.innerHTML = "";

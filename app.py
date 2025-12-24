@@ -60,11 +60,37 @@ class TaskManager:
         self._lock = threading.Lock()
         self._user_tasks = defaultdict(dict)
 
+    def start_task(self, user_id, task_id):
+        """初始化任务状态"""
+        with self._lock:
+            self._user_tasks[user_id][task_id] = {
+                'status': 'running',
+                'events': [],      # 消息缓存队列
+                'created_at': os.times().elapsed,
+                'last_read_idx': 0 # 游标（可选）
+            }
+
+    def append_event(self, user_id, task_id, event_data):
+        """后台线程写入消息"""
+        with self._lock:
+            if task_id in self._user_tasks[user_id]:
+                self._user_tasks[user_id][task_id]['events'].append(event_data)
+
+    def get_events_from(self, user_id, task_id, start_index):
+        """前端读取消息（增量读取）"""
+        with self._lock:
+            task = self._user_tasks[user_id].get(task_id)
+            if not task:
+                return [], 'stopped'
+            
+            # 获取从 start_index 开始的所有新消息
+            new_events = task['events'][start_index:]
+            return new_events, task['status']
+
     def set_status(self, user_id, task_id, status):
         with self._lock:
-            if task_id not in self._user_tasks[user_id]:
-                self._user_tasks[user_id][task_id] = {}
-            self._user_tasks[user_id][task_id]['status'] = status
+            if task_id in self._user_tasks[user_id]:
+                self._user_tasks[user_id][task_id]['status'] = status
 
     def get_status(self, user_id, task_id):
         with self._lock:
@@ -146,6 +172,28 @@ def extract_file_content(file_storage) -> str:
         content = f"\n【文件 {filename}】: 解析失败 - {str(e)}"
         
     return content
+
+# 1. 后台工作线程函数
+def background_worker(writer, task_id, title, chapters, references, custom_data, check_status_func, initial_context, user_id):
+    try:
+        # 执行生成器
+        generator = writer.generate_stream(
+            task_id, title, chapters, references, custom_data, check_status_func, initial_context
+        )
+        
+        # 逐条消费生成器产生的数据，并存入 TaskManager
+        for chunk in generator:
+            # chunk 格式为 "data: {...}\n\n"
+            task_manager.append_event(user_id, task_id, chunk)
+            
+    except Exception as e:
+        # 发生未捕获异常时，记录错误日志
+        error_msg = json.dumps({'type': 'log', 'msg': f'❌ 后台任务异常: {str(e)}'})
+        task_manager.append_event(user_id, task_id, f"data: {error_msg}\n\n")
+    finally:
+        # 标记结束 (如果非用户主动停止)
+        if task_manager.get_status(user_id, task_id) == 'running':
+            task_manager.set_status(user_id, task_id, 'completed')
 
 # ==============================================================================
 # 路由逻辑
@@ -243,54 +291,73 @@ def export_docx():
         return jsonify({"error": str(e)}), 500
 
 @app.route('/generate', methods=['POST'])
-def generate():
-    # 1. 鉴权
-    if not check_auth(): return "Unauthorized: Invalid Key", 401
-
+def generate_start():
+    if not check_auth(): return jsonify({"error": "Unauthorized"}), 401
     user_id = request.headers.get('X-User-ID')
     
-    # 2. 获取表单文本数据
+    # 获取数据
     raw_chapters = request.form.get('chapter_data')
     title = request.form.get('title')
     references = request.form.get('references')
-    text_custom_data = request.form.get('custom_data', '') # 用户在文本框输入的
+    text_custom_data = request.form.get('custom_data', '')
     task_id = request.form.get('task_id')
-    initial_context = request.form.get('initial_context', '') 
+    initial_context = request.form.get('initial_context', '')
     
-    # 3. [核心修改] 处理上传的文件
-    uploaded_files = request.files.getlist('data_files') # 获取文件列表
+    # 文件处理 (在主线程完成，传递字符串给子线程)
+    uploaded_files = request.files.getlist('data_files')
     file_extracted_text = ""
-    
     if uploaded_files:
         for file in uploaded_files:
             if file.filename:
-                # 调用解析函数
                 file_extracted_text += extract_file_content(file) + "\n\n"
-    
-    # 4. 合并数据：文本框内容 + 文件解析内容
     final_custom_data = text_custom_data + "\n" + file_extracted_text
+
+    # 初始化任务状态
+    task_manager.start_task(user_id, task_id)
     
-    # 5. 启动生成
-    task_manager.set_status(user_id, task_id, 'running')
     writer = PaperAutoWriter(API_KEY, BASE_URL, MODEL_NAME)
     
     def check_status_func():
         return task_manager.get_status(user_id, task_id)
 
-    return Response(
-        stream_with_context(
-            writer.generate_stream(
-                task_id, 
-                title, 
-                json.loads(raw_chapters), 
-                references, 
-                final_custom_data,  # 传入合并后的数据
-                check_status_func,
-                initial_context 
-            )
-        ), 
-        content_type='text/event-stream'
+    # 启动后台线程
+    t = threading.Thread(
+        target=background_worker,
+        args=(writer, task_id, title, json.loads(raw_chapters), references, final_custom_data, check_status_func, initial_context, user_id)
     )
+    t.daemon = True # 设置为守护线程，防止阻塞主进程退出
+    t.start()
+
+    return jsonify({"status": "success", "msg": "Task started in background"})
+
+@app.route('/stream_progress')
+def stream_progress():
+    if not check_auth(): return "Unauthorized", 401
+    
+    user_id = request.headers.get('X-User-ID')
+    task_id = request.args.get('task_id')
+    last_event_index = int(request.args.get('last_index', 0)) # 前端告诉后端它读到哪了
+
+    def event_stream():
+        current_idx = last_event_index
+        while True:
+            # 获取新消息
+            events, status = task_manager.get_events_from(user_id, task_id, current_idx)
+            
+            if events:
+                for event in events:
+                    yield event
+                    current_idx += 1
+            else:
+                # 如果没有新消息且任务已结束/停止，则关闭流
+                if status in ['stopped', 'completed']:
+                    yield f"data: {json.dumps({'type': 'done'})}\n\n"
+                    break
+                # 如果任务还在运行但暂时没消息，保持连接
+                import time
+                time.sleep(0.5) 
+
+    return Response(stream_with_context(event_stream()), content_type='text/event-stream')
 
 if __name__ == '__main__':
     if not os.path.exists(KEYS_FILE):

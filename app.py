@@ -1,19 +1,23 @@
 import json
 import os
 import secrets
+import io
+import threading
+import time
+from collections import defaultdict
+
 import matplotlib
+# 设置后端为 Agg，确保在无显示器的服务器环境下也能运行
+matplotlib.use('Agg') 
+
 # [新增依赖库]
 import pandas as pd  # 处理 Excel/CSV
 import pypdf         # 处理 PDF
 import docx          # 处理 Word .docx
 
-# 设置后端为 Agg，确保在无显示器的服务器环境下也能运行
-matplotlib.use('Agg') 
-from flask import Flask, render_template, request, Response, stream_with_context, jsonify, send_file, session, redirect, url_for
+from flask import Flask, render_template, request, Response, stream_with_context, jsonify, send_file, session
 from utils.word import MarkdownToDocx
 from utils.prompts import PaperAutoWriter
-import threading
-from collections import defaultdict
 
 app = Flask(__name__)
 app.secret_key = "super_secret_key_for_session" # 用于管理员登录Session
@@ -67,7 +71,7 @@ class TaskManager:
                 'status': 'running',
                 'events': [],      # 消息缓存队列
                 'created_at': os.times().elapsed,
-                'last_read_idx': 0 # 游标（可选）
+                'last_read_idx': 0 
             }
 
     def append_event(self, user_id, task_id, event_data):
@@ -99,69 +103,65 @@ class TaskManager:
 task_manager = TaskManager()
 
 # ==============================================================================
-# [新增] 多格式文件内容提取工具
+# 多格式文件内容提取工具 (已修改为支持流对象)
 # ==============================================================================
-def extract_file_content(file_storage) -> str:
+def extract_file_content(file_stream, filename) -> str:
     """
     根据文件后缀名，提取文件内容为纯文本字符串。
-    支持: .csv, .xlsx, .xls, .txt, .pdf, .docx
+    注意：file_stream 必须是 BytesIO 或已打开的文件对象
     """
-    filename = file_storage.filename.lower()
+    filename = filename.lower()
     content = ""
     
     try:
-        # 1. Excel/CSV (转为 Markdown 表格)
+        # 重置指针，防止读取位置错误
+        if hasattr(file_stream, 'seek'):
+            file_stream.seek(0)
+
+        # 1. Excel/CSV
         if filename.endswith('.csv'):
-            # 读取 CSV
             try:
-                df = pd.read_csv(file_storage)
+                df = pd.read_csv(file_stream)
             except UnicodeDecodeError:
-                # 尝试 GBK 编码 (中文常见)
-                file_storage.seek(0)
-                df = pd.read_csv(file_storage, encoding='gbk')
-            
-            # 限制行数，防止 Token 爆炸 (取前 60 行)
+                file_stream.seek(0)
+                df = pd.read_csv(file_stream, encoding='gbk')
             content = f"\n【文件 {filename} 数据预览(前60行)】:\n" + df.head(60).to_markdown(index=False)
         
         elif filename.endswith(('.xls', '.xlsx')):
-            df = pd.read_excel(file_storage)
+            df = pd.read_excel(file_stream)
             content = f"\n【文件 {filename} 数据预览(前60行)】:\n" + df.head(60).to_markdown(index=False)
             
-        # 2. TXT (纯文本)
+        # 2. TXT
         elif filename.endswith('.txt'):
             content = f"\n【文件 {filename} 内容】:\n"
             try:
-                text = file_storage.read().decode('utf-8')
+                text = file_stream.read().decode('utf-8')
             except:
-                file_storage.seek(0)
-                text = file_storage.read().decode('gbk', errors='ignore')
-            content += text[:5000] # 限制长度
+                file_stream.seek(0)
+                text = file_stream.read().decode('gbk', errors='ignore')
+            content += text[:5000]
             
-        # 3. PDF (提取文本，忽略图片)
+        # 3. PDF
         elif filename.endswith('.pdf'):
-            reader = pypdf.PdfReader(file_storage)
+            reader = pypdf.PdfReader(file_stream)
             text = ""
-            # 限制页数 (前 15 页)
             for i, page in enumerate(reader.pages[:15]): 
                 page_text = page.extract_text()
                 if page_text: 
                     text += f"[第{i+1}页] {page_text}\n"
             content = f"\n【文件 {filename} 内容提取】:\n{text}"
 
-        # 4. DOCX (Word 文档)
+        # 4. DOCX
         elif filename.endswith('.docx'):
-            doc = docx.Document(file_storage)
+            doc = docx.Document(file_stream)
             text = ""
-            # 提取段落
             for para in doc.paragraphs:
                 if para.text.strip():
                     text += para.text + "\n"
-            # 提取表格 (简单转文本)
             for table in doc.tables:
                 for row in table.rows:
                     row_text = [cell.text.strip() for cell in row.cells]
                     text += " | ".join(row_text) + "\n"
-            
             content = f"\n【文件 {filename} 内容提取】:\n{text[:5000]}"
 
         else:
@@ -173,25 +173,43 @@ def extract_file_content(file_storage) -> str:
         
     return content
 
-# 1. 后台工作线程函数
-def background_worker(writer, task_id, title, chapters, references, custom_data, check_status_func, initial_context, user_id):
+# 1. 后台工作线程函数 (现在负责所有重活)
+def background_worker(writer, task_id, title, chapters, references, text_custom_data, raw_files_data, check_status_func, initial_context, user_id):
     try:
-        # 执行生成器
+        # 1. 在后台线程中进行文件解析 (耗时操作放在这里，不阻塞主线程)
+        final_custom_data = text_custom_data
+        
+        if raw_files_data:
+            # 发送日志告诉前端正在解析文件
+            task_manager.append_event(user_id, task_id, f"data: {json.dumps({'type': 'log', 'msg': '📂 正在后台解析上传的文件...'})}\n\n")
+            
+            file_extracted_text = ""
+            for file_info in raw_files_data:
+                # file_info 包含 {'name': filename, 'content': BytesIO对象}
+                try:
+                    extracted = extract_file_content(file_info['content'], file_info['name'])
+                    file_extracted_text += extracted + "\n\n"
+                except Exception as e:
+                    file_extracted_text += f"\n文件 {file_info['name']} 解析失败: {e}\n"
+            
+            final_custom_data = text_custom_data + "\n" + file_extracted_text
+            task_manager.append_event(user_id, task_id, f"data: {json.dumps({'type': 'log', 'msg': '✅ 文件解析完成，开始生成...'})}\n\n")
+
+        # 2. 执行生成器
         generator = writer.generate_stream(
-            task_id, title, chapters, references, custom_data, check_status_func, initial_context
+            task_id, title, chapters, references, final_custom_data, check_status_func, initial_context
         )
         
-        # 逐条消费生成器产生的数据，并存入 TaskManager
+        # 3. 逐条消费
         for chunk in generator:
-            # chunk 格式为 "data: {...}\n\n"
             task_manager.append_event(user_id, task_id, chunk)
+            # 极短暂休眠，释放GIL锁，让其他并发任务的SSE线程有机会呼吸
+            time.sleep(0.005) 
             
     except Exception as e:
-        # 发生未捕获异常时，记录错误日志
         error_msg = json.dumps({'type': 'log', 'msg': f'❌ 后台任务异常: {str(e)}'})
         task_manager.append_event(user_id, task_id, f"data: {error_msg}\n\n")
     finally:
-        # 标记结束 (如果非用户主动停止)
         if task_manager.get_status(user_id, task_id) == 'running':
             task_manager.set_status(user_id, task_id, 'completed')
 
@@ -209,62 +227,7 @@ def verify_login():
     if is_valid_key(key):
         return jsonify({"status": "success", "msg": "登录成功"})
     else:
-        return jsonify({"status": "fail", "msg": "无效的卡密，请联系管理员获取"}), 401
-
-@app.route('/admin')
-def admin_page():
-    return render_template('admin.html')
-
-@app.route('/api/admin/login', methods=['POST'])
-def admin_login():
-    data = request.json
-    if data.get('username') == ADMIN_USERNAME and data.get('password') == ADMIN_PASSWORD:
-        session['is_admin'] = True
-        return jsonify({"status": "success"})
-    return jsonify({"status": "fail", "msg": "账号或密码错误"}), 401
-
-@app.route('/api/admin/logout', methods=['POST'])
-def admin_logout():
-    session.pop('is_admin', None)
-    return jsonify({"status": "success"})
-
-@app.route('/api/admin/keys', methods=['GET'])
-def get_keys():
-    if not session.get('is_admin'): return "Unauthorized", 401
-    return jsonify({"keys": list(VALID_KEYS)})
-
-@app.route('/api/admin/keys', methods=['POST'])
-def add_key():
-    if not session.get('is_admin'): return "Unauthorized", 401
-    data = request.json or {}
-    custom_key = data.get('key', '').strip()
-    new_key = ""
-    if custom_key:
-        if custom_key in VALID_KEYS:
-            return jsonify({"status": "fail", "msg": f"卡密 '{custom_key}' 已存在"}), 400
-        new_key = custom_key
-    else:
-        new_key = "key_" + secrets.token_hex(4)
-        if new_key in VALID_KEYS: new_key = "key_" + secrets.token_hex(4)
-    VALID_KEYS.add(new_key)
-    save_keys(list(VALID_KEYS))
-    return jsonify({"status": "success", "key": new_key})
-
-@app.route('/api/admin/keys', methods=['DELETE'])
-def delete_key():
-    if not session.get('is_admin'): return "Unauthorized", 401
-    key_to_delete = request.json.get('key')
-    if key_to_delete in VALID_KEYS:
-        VALID_KEYS.remove(key_to_delete)
-        save_keys(list(VALID_KEYS))
-    return jsonify({"status": "success"})
-
-# --- 业务功能 ---
-
-def check_auth():
-    user_id = request.headers.get('X-User-ID')
-    if not user_id or user_id not in VALID_KEYS: return False
-    return True
+        return jsonify({"status": "fail", "msg": "无效的卡密"}), 401
 
 @app.route('/control', methods=['POST'])
 def control_task():
@@ -286,16 +249,19 @@ def export_docx():
         file_stream = MarkdownToDocx.convert(data.get('content', ''))
         return send_file(file_stream, as_attachment=True, download_name='thesis.docx')
     except Exception as e:
-        import traceback
-        traceback.print_exc()
         return jsonify({"error": str(e)}), 500
+
+def check_auth():
+    user_id = request.headers.get('X-User-ID')
+    if not user_id or user_id not in VALID_KEYS: return False
+    return True
 
 @app.route('/generate', methods=['POST'])
 def generate_start():
     if not check_auth(): return jsonify({"error": "Unauthorized"}), 401
     user_id = request.headers.get('X-User-ID')
     
-    # 获取数据
+    # 获取表单数据
     raw_chapters = request.form.get('chapter_data')
     title = request.form.get('title')
     references = request.form.get('references')
@@ -303,31 +269,37 @@ def generate_start():
     task_id = request.form.get('task_id')
     initial_context = request.form.get('initial_context', '')
     
-    # 文件处理 (在主线程完成，传递字符串给子线程)
+    # 【关键修改】只读取文件流到内存，不进行解析（解析耗时，会阻塞主线程）
     uploaded_files = request.files.getlist('data_files')
-    file_extracted_text = ""
+    raw_files_data = []
+    
     if uploaded_files:
         for file in uploaded_files:
             if file.filename:
-                file_extracted_text += extract_file_content(file) + "\n\n"
-    final_custom_data = text_custom_data + "\n" + file_extracted_text
+                # 将文件内容读入 BytesIO，这样就可以在后台线程中重复读取了
+                # request.files 是临时文件流，请求结束后会关闭，所以必须 copy 出来
+                file_content = io.BytesIO(file.read())
+                raw_files_data.append({
+                    'name': file.filename, 
+                    'content': file_content
+                })
 
-    # 初始化任务状态
+    # 初始化任务
     task_manager.start_task(user_id, task_id)
-    
     writer = PaperAutoWriter(API_KEY, BASE_URL, MODEL_NAME)
     
     def check_status_func():
         return task_manager.get_status(user_id, task_id)
 
-    # 启动后台线程
+    # 启动后台线程 (参数中增加了 raw_files_data)
     t = threading.Thread(
         target=background_worker,
-        args=(writer, task_id, title, json.loads(raw_chapters), references, final_custom_data, check_status_func, initial_context, user_id)
+        args=(writer, task_id, title, json.loads(raw_chapters), references, text_custom_data, raw_files_data, check_status_func, initial_context, user_id)
     )
-    t.daemon = True # 设置为守护线程，防止阻塞主进程退出
+    t.daemon = True 
     t.start()
 
+    # 立即返回，UI不会卡顿
     return jsonify({"status": "success", "msg": "Task started in background"})
 
 @app.route('/stream_progress')
@@ -336,31 +308,78 @@ def stream_progress():
     
     user_id = request.headers.get('X-User-ID')
     task_id = request.args.get('task_id')
-    last_event_index = int(request.args.get('last_index', 0)) # 前端告诉后端它读到哪了
+    try: 
+        last_event_index = int(request.args.get('last_index', 0))
+    except: 
+        last_event_index = 0
 
     def event_stream():
         current_idx = last_event_index
+        idle_counter = 0
+        
         while True:
             # 获取新消息
             events, status = task_manager.get_events_from(user_id, task_id, current_idx)
             
             if events:
+                idle_counter = 0
                 for event in events:
-                    yield event
+                    event_str = str(event)
+                    if not event_str.endswith('\n\n'):
+                        event_str += '\n\n'
+                    yield event_str
                     current_idx += 1
             else:
-                # 如果没有新消息且任务已结束/停止，则关闭流
                 if status in ['stopped', 'completed']:
                     yield f"data: {json.dumps({'type': 'done'})}\n\n"
                     break
-                # 如果任务还在运行但暂时没消息，保持连接
-                import time
+                
+                # 心跳包频率加快到 0.5秒
+                yield ": keep-alive\n\n"
                 time.sleep(0.5) 
 
-    return Response(stream_with_context(event_stream()), content_type='text/event-stream')
+    # 禁用 Nginx 缓存，确保流式输出
+    response = Response(stream_with_context(event_stream()), content_type='text/event-stream')
+    response.headers['X-Accel-Buffering'] = 'no'
+    response.headers['Cache-Control'] = 'no-cache'
+    response.headers['Connection'] = 'keep-alive'
+    
+    return response
+
+# --- 管理员相关接口保持不变 ---
+@app.route('/admin')
+def admin_page(): return render_template('admin.html')
+
+@app.route('/api/admin/login', methods=['POST'])
+def admin_login():
+    if request.json.get('username') == ADMIN_USERNAME and request.json.get('password') == ADMIN_PASSWORD:
+        session['is_admin'] = True
+        return jsonify({"status": "success"})
+    return jsonify({"status": "fail"}), 401
+
+@app.route('/api/admin/logout', methods=['POST'])
+def admin_logout():
+    session.pop('is_admin', None)
+    return jsonify({"status": "success"})
+
+@app.route('/api/admin/keys', methods=['GET', 'POST', 'DELETE'])
+def manage_keys():
+    if not session.get('is_admin'): return "Unauthorized", 401
+    if request.method == 'GET': return jsonify({"keys": list(VALID_KEYS)})
+    if request.method == 'DELETE':
+        key = request.json.get('key')
+        if key in VALID_KEYS: VALID_KEYS.remove(key); save_keys(list(VALID_KEYS))
+        return jsonify({"status": "success"})
+    if request.method == 'POST':
+        custom = request.json.get('key', '').strip()
+        new_key = custom if custom else f"key_{secrets.token_hex(4)}"
+        if new_key in VALID_KEYS: return jsonify({"status": "fail", "msg": "Exists"}), 400
+        VALID_KEYS.add(new_key); save_keys(list(VALID_KEYS))
+        return jsonify({"status": "success", "key": new_key})
 
 if __name__ == '__main__':
     if not os.path.exists(KEYS_FILE):
         VALID_KEYS.add("test_vip_888")
         save_keys(list(VALID_KEYS))
+    # 开启多线程模式
     app.run(debug=True, host="0.0.0.0", port=8001, threaded=True)

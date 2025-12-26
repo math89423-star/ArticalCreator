@@ -4,6 +4,7 @@ import secrets
 import io
 import threading
 import time
+import re
 from collections import defaultdict
 
 import matplotlib
@@ -63,35 +64,44 @@ def is_valid_key(key):
 # --- 任务管理器 (优化版) ---
 class TaskManager:
     def __init__(self):
-        # 改用 RLock (可重入锁)，更加安全，防止自身死锁
+        # 使用 RLock 确保线程安全
         self._lock = threading.RLock()
-        self._user_tasks = defaultdict(dict)
+        # 结构: { user_id: { task_id: { 'status': 'running', ... } } }
+        self._user_tasks = {} 
 
     def start_task(self, user_id, task_id):
         """初始化任务状态"""
         with self._lock:
+            # 1. 确保用户字典存在
+            if user_id not in self._user_tasks:
+                self._user_tasks[user_id] = {}
+            
+            # 2. 初始化具体任务 (强制重置状态)
             self._user_tasks[user_id][task_id] = {
                 'status': 'running',
-                'events': [],      # 消息缓存队列
+                'events': [],      
                 'created_at': time.time(),
                 'last_read_idx': 0 
             }
+            print(f"[System] 任务启动: User={user_id}, Task={task_id}")
 
     def append_event(self, user_id, task_id, event_data):
-        """后台线程写入消息"""
+        """写入消息"""
         with self._lock:
-            if task_id in self._user_tasks[user_id]:
+            if user_id in self._user_tasks and task_id in self._user_tasks[user_id]:
                 self._user_tasks[user_id][task_id]['events'].append(event_data)
 
     def get_events_from(self, user_id, task_id, start_index):
-        """前端读取消息（增量读取）"""
+        """读取消息"""
         with self._lock:
-            task = self._user_tasks[user_id].get(task_id)
-            if not task:
+            # 严格检查层级，防止报错
+            if user_id not in self._user_tasks or task_id not in self._user_tasks[user_id]:
                 return [], 'stopped'
             
-            # 安全获取切片，即使 index 越界也不会报错
+            task = self._user_tasks[user_id][task_id]
             events_len = len(task['events'])
+            
+            # 增量读取
             if start_index >= events_len:
                 return [], task['status']
                 
@@ -99,16 +109,25 @@ class TaskManager:
             return new_events, task['status']
 
     def set_status(self, user_id, task_id, status):
+        """设置状态 (带日志)"""
         with self._lock:
-            if task_id in self._user_tasks[user_id]:
+            if user_id in self._user_tasks and task_id in self._user_tasks[user_id]:
+                old_status = self._user_tasks[user_id][task_id]['status']
                 self._user_tasks[user_id][task_id]['status'] = status
+                print(f"[Control] 状态变更: User={user_id}, Task={task_id} | {old_status} -> {status}")
+            else:
+                print(f"[Control] ⚠️ 尝试修改不存在的任务: User={user_id}, Task={task_id}")
 
     def get_status(self, user_id, task_id):
+        """获取状态 (默认 stopped 以防万一)"""
         with self._lock:
-            return self._user_tasks[user_id].get(task_id, {}).get('status', 'stopped')
+            if user_id not in self._user_tasks:
+                return 'stopped'
+            if task_id not in self._user_tasks[user_id]:
+                return 'stopped'
+            return self._user_tasks[user_id][task_id]['status']
 
 task_manager = TaskManager()
-
 # ==============================================================================
 # 多格式文件内容提取工具
 # ==============================================================================
@@ -243,14 +262,52 @@ def verify_login():
 @app.route('/control', methods=['POST'])
 def control_task():
     if not check_auth(): return jsonify({"error": "无效的卡密"}), 401
+    
     user_id = request.headers.get('X-User-ID')
     data = request.json
     task_id = data.get('task_id')
     action = data.get('action')
+    
+    print(f"[API] 收到控制指令: Action={action}, User={user_id}, Task={task_id}")  # 调试日志
+
+    if not task_id:
+        return jsonify({"error": "Missing task_id"}), 400
+
     if action == 'pause': task_manager.set_status(user_id, task_id, 'paused')
     elif action == 'resume': task_manager.set_status(user_id, task_id, 'running')
     elif action == 'stop': task_manager.set_status(user_id, task_id, 'stopped')
+    
     return jsonify({"status": "success"})
+
+# [核心修复] 新增重写接口
+@app.route('/rewrite_section', methods=['POST'])
+def rewrite_section():
+    if not check_auth(): return jsonify({"error": "Unauthorized"}), 401
+    
+    data = request.json
+    title = data.get('title')
+    section_title = data.get('section_title')
+    instruction = data.get('instruction')
+    context = data.get('context', '') 
+    custom_data = data.get('custom_data', '')
+    
+    if not section_title: return jsonify({"error": "No section title"}), 400
+
+    writer = PaperAutoWriter(API_KEY, BASE_URL, MODEL_NAME)
+    
+    try:
+        # 调用同步生成方法 (需确保 PaperAutoWriter 类中有 rewrite_chapter 方法)
+        new_content = writer.rewrite_chapter(title, section_title, instruction, context, custom_data)
+        
+        # 简单清洗，防止 LLM 自己带了标题导致重复
+        # 移除以 # 开头的包含 section_title 的行
+        clean_pattern = r'^#+\s*' + re.escape(section_title) + r'.*\n'
+        new_content = re.sub(clean_pattern, '', new_content, flags=re.IGNORECASE|re.MULTILINE).strip()
+        
+        return jsonify({"status": "success", "content": new_content})
+    except Exception as e:
+        print(f"Rewrite error: {e}")
+        return jsonify({"status": "error", "msg": str(e)}), 500
 
 @app.route('/export_docx', methods=['POST'])
 def export_docx():
@@ -297,8 +354,8 @@ def generate_start():
     task_manager.start_task(user_id, task_id)
     writer = PaperAutoWriter(API_KEY, BASE_URL, MODEL_NAME)
     
-    def check_status_func():
-        return task_manager.get_status(user_id, task_id)
+    def check_status_func(uid=user_id, tid=task_id):
+        return task_manager.get_status(uid, tid)
 
     # 启动后台线程
     t = threading.Thread(
@@ -321,12 +378,15 @@ def stream_progress():
 
     def event_stream():
         current_idx = last_event_index
+        # 增加一个保活计数器
+        keep_alive_count = 0
         
         while True:
             # 获取新消息
             events, status = task_manager.get_events_from(user_id, task_id, current_idx)
             
             if events:
+                keep_alive_count = 0 # 有数据就重置计数
                 for event in events:
                     event_str = str(event)
                     if not event_str.endswith('\n\n'):
@@ -338,9 +398,9 @@ def stream_progress():
                     yield f"data: {json.dumps({'type': 'done'})}\n\n"
                     break
                 
-                # 心跳包频率
+                # 心跳包: 每 0.3 秒发一次
                 yield ": keep-alive\n\n"
-                time.sleep(0.5) 
+                time.sleep(0.3)
 
     # 禁用缓存
     response = Response(stream_with_context(event_stream()), content_type='text/event-stream')
@@ -393,9 +453,6 @@ if __name__ == '__main__':
     print("🚀 服务器正在启动...")
     print("⚠️  请访问 http://192.168.0.35:8001 (请根据实际IP访问)")
     print("✅ 已启用 Waitress 高并发模式，支持多任务同时运行")
-    
-    # ❌ 不再使用 app.run()，它不适合并发 SSE
-    # app.run(debug=True, host="0.0.0.0", port=8001, threaded=True)
     
     # ✅ 使用 Waitress 启动，配置 10 个处理线程
     serve(app, host="0.0.0.0", port=8001, threads=100, connection_limit=200, channel_timeout=300)

@@ -7,6 +7,25 @@ from typing import Dict, Generator
 from .reference import ReferenceManager
 from .word import TextCleaner
 
+def get_rewrite_prompt(section_title: str, user_instruction: str, context_summary: str, custom_data: str) -> str:
+    return f"""
+# 角色
+你是一位专业的学术论文修改师。
+
+# 任务
+重写论文章节：**“{section_title}”**。
+
+# 关键要求
+1. **用户指令 (最高优先级)**: {user_instruction}
+2. **排版格式 (绝对严格执行)**:
+   - **首行缩进**: 输出的**每一个自然段**，开头必须包含**两个全角空格** (　　)。
+   - **段间距**: 段落之间**严禁空行**。请使用单个换行符 (`\\n`) 分隔段落，**不要**使用双换行 (`\\n\\n`)。
+   - **标题控制**: **严禁**输出章节标题（如 "### {section_title}"），只输出正文内容。
+3. **内容要求**: 保持学术语气，逻辑严密。
+4. **数据使用**: {custom_data}...
+
+请直接开始输出重写后的正文，不要包含“好的”等客套话。
+"""
 
 def get_academic_thesis_prompt(target_words: int, ref_content_list: List[str], current_chapter_title: str, chapter_num: str, has_user_data: bool = False) -> str:
     
@@ -285,19 +304,27 @@ def get_academic_thesis_prompt(target_words: int, ref_content_list: List[str], c
 
 class PaperAutoWriter:
     def __init__(self, api_key: str, base_url: str, model: str):
-        self.client = OpenAI(api_key=api_key, base_url=base_url)
+        self.client = OpenAI(api_key=api_key, base_url=base_url, timeout=120.0)
         self.model = model
 
     def _call_llm(self, system_prompt: str, user_prompt: str) -> str:
-        try:
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
-                temperature=0.7, stream=False
-            )
-            return response.choices[0].message.content.strip()
-        except Exception as e:
-            return f"[Error: {str(e)}]"
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                # stream=False 意味着我们需要等待完整结果，必须有耐心
+                response = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
+                    temperature=0.7, 
+                    stream=False
+                )
+                return response.choices[0].message.content.strip()
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    print(f"⚠️ API 调用失败，正在重试 ({attempt+1}/{max_retries}): {e}")
+                    time.sleep(2) # 休息2秒再试
+                else:
+                    return f"[Error: API调用最终失败 - {str(e)}]"
 
     def _research_phase(self, topic: str) -> str:
         try:
@@ -565,3 +592,12 @@ class PaperAutoWriter:
             yield f"data: {json.dumps({'type': 'done'})}\n\n"
         else:
             yield f"data: {json.dumps({'type': 'log', 'msg': '🛑 任务已完全终止 (已跳过后续内容)'})}\n\n"
+
+    def rewrite_chapter(self, title: str, section_title: str, user_instruction: str, context: str, custom_data: str) -> str:
+        """
+        非流式生成，直接返回重写后的段落
+        """
+        sys_prompt = get_rewrite_prompt(section_title, user_instruction, context[-500:], custom_data)
+        user_prompt = f"请根据指令重写章节：{section_title}\n指令：{user_instruction}"
+        
+        return self._call_llm(sys_prompt, user_prompt)

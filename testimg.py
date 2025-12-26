@@ -1,47 +1,47 @@
 import matplotlib.pyplot as plt
+
 import seaborn as sns
+
 import pandas as pd
-import numpy as np
-from matplotlib.font_manager import FontProperties  # 导入字体管理工具
 
-# ========== 强制绑定Windows系统SimHei字体（彻底解决中文方框） ==========
-# 直接指定SimHei字体文件路径（Windows系统默认路径）
-font = FontProperties(fname=r'C:\Windows\Fonts\simhei.ttf', size=12)
-# 全局配置+显式字体双保险
+
+
 plt.rcParams['font.sans-serif'] = ['SimHei']
-plt.rcParams['axes.unicode_minus'] = False  # 解决负号显示异常
-# ==================================================================
 
-sns.set_theme(style="whitegrid")
+plt.rcParams['axes.unicode_minus'] = False
 
-# 构建数据（修正全角空格，统一缩进）
-data = {
-    '年份': ['2022', '2023', '2024'],
-    '营业总收入（亿元）': [62.92, 78.42, 85.11],
-    '归属净利润（亿元）': [8.01, 13.69, 21.86]
-}
-df = pd.DataFrame(data)
+　　sns.set_theme(style="whitegrid")
 
-# 创建画布和主坐标轴
-fig, ax1 = plt.subplots(figsize=(10, 6))
-# 绘制营业总收入折线（显式指定字体）
-ax1.plot(df['年份'], df['营业总收入（亿元）'], marker='o', linewidth=2, label='营业总收入', color='#1f77b4')
-ax1.set_xlabel('年份', fontproperties=font, fontsize=12)  # 绑定字体
-ax1.set_ylabel('营业总收入（亿元）', fontproperties=font, fontsize=12, color='#1f77b4')  # 绑定字体
-ax1.tick_params(axis='y', labelcolor='#1f77b4')
 
-# 创建次坐标轴
-ax2 = ax1.twinx()
-# 绘制归属净利润折线（显式指定字体）
-ax2.plot(df['年份'], df['归属净利润（亿元）'], marker='s', linewidth=2, label='归属净利润', color='#d62728')
-ax2.set_ylabel('归属净利润（亿元）', fontproperties=font, fontsize=12, color='#d62728')  # 绑定字体
-ax2.tick_params(axis='y', labelcolor='#d62728')
 
-# 设置标题（显式指定字体）
-plt.title('森麒麟2022-2024年营收与净利润趋势', fontproperties=font, fontsize=14, pad=20)  # 绑定字体
-# 设置图例（显式指定字体）
-ax1.legend(prop=font, loc='upper left')  # 图例绑定字体
-ax2.legend(prop=font, loc='upper right')  # 图例绑定字体
+　　data = {
 
-plt.tight_layout()
-plt.show()
+　　'报告期': ['2020年年度', '2021年年度', '2022年年度', '2023年年度', '2024年Q1'],
+
+　　'资产负债率(%)': [34.14, 36.27, 41.10, 42.30, 42.85]
+
+　　}
+
+　　df = pd.DataFrame(data)
+
+
+
+plt.figure(figsize=(8, 5))
+
+plt.plot(df['报告期'], df['资产负债率(%)'], marker='o', linewidth=2, markersize=8, color='#1f77b4')
+
+plt.xlabel('报告期', fontsize=12)
+
+plt.ylabel('资产负债率(%)', fontsize=12)
+
+plt.title('森麒麟资产负债率变动趋势（2020-2024Q1）', fontsize=14)
+
+plt.ylim(30, 50)
+
+plt.grid(True, linestyle='--', alpha=0.7)
+
+
+
+　　for i, rate in enumerate(df['资产负债率(%)']):
+
+plt.annotate(f'{rate}%', (df['报告期'][i], rate), textcoords="offset points", xytext=(0,10), ha='center')

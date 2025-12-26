@@ -1,0 +1,285 @@
+@charset "UTF-8";
+
+body { background-color: #f4f6f9; font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; }
+
+/* ---------------------------------------------------------
+   Layout
+--------------------------------------------------------- */
+.sidebar { 
+    background: white; 
+    padding: 25px; 
+    border-right: 1px solid #e0e0e0; 
+    height: 100vh; 
+    overflow-y: auto;       
+    display: block !important; 
+}
+.output-area { 
+    background: white; 
+    padding: 40px; 
+    min-height: 100vh; 
+    overflow-y: auto; 
+    position: relative;
+}
+
+/* ---------------------------------------------------------
+   Login Overlay & Box (Fixed)
+--------------------------------------------------------- */
+#loginOverlay {
+    position: fixed; 
+    top: 0; 
+    left: 0; 
+    width: 100vw; 
+    height: 100vh; 
+    background-color: rgba(0,0,0,0.85); 
+    z-index: 9999;
+    display: flex; 
+    justify-content: center; 
+    align-items: center;
+}
+
+.login-box {
+    background: white; 
+    padding: 40px; 
+    border-radius: 12px; 
+    /* Explicit dimensions */
+    width: 400px !important;
+    min-width: 300px;       
+    max-width: 90vw;  
+    /* Reset margins to prevent stretching */
+    margin: 0 auto; 
+    text-align: center;
+    box-shadow: 0 15px 35px rgba(0,0,0,0.4);
+    animation: fadeInDown 0.3s ease-out;
+}
+
+@keyframes fadeInDown {
+    from { opacity: 0; transform: translateY(-20px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+/* ---------------------------------------------------------
+   Log Area
+--------------------------------------------------------- */
+#logArea { 
+    font-size: 0.85rem; 
+    background: #212529; 
+    color: #00ff9d; 
+    padding: 15px; 
+    border-radius: 6px; 
+    font-family: 'Consolas', 'Monaco', monospace; 
+    height: 300px; 
+    min-height: 150px; 
+    max-height: 600px;
+    resize: vertical; 
+    overflow-y: auto; 
+    margin-top: auto; 
+    border: 1px solid #444;
+    line-height: 1.5;
+}
+
+/* ---------------------------------------------------------
+   Chapter Configuration Cards
+--------------------------------------------------------- */
+.chapter-card {
+    background: #fff;
+    border: 1px solid #dee2e6;
+    border-radius: 6px;
+    margin-bottom: 12px;
+    overflow: hidden;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+}
+.chapter-header {
+    background: #f8f9fa;
+    padding: 8px 12px;
+    border-bottom: 1px solid #eee;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-weight: 600;
+    color: #2c3e50;
+    font-size: 0.95rem;
+}
+.chapter-body { padding: 5px; }
+.leaf-row {
+    display: flex;
+    align-items: center;
+    padding: 6px 5px;
+    border-bottom: 1px dashed #f0f0f0;
+}
+.leaf-row:last-child { border-bottom: none; }
+.leaf-row:hover { background-color: #fcfcfc; }
+
+.leaf-title-input {
+    border: none;
+    background: transparent;
+    font-size: 0.9rem;
+    color: #555;
+    width: 100%;
+    margin-right: 10px;
+}
+.leaf-title-input:focus {
+    background: #fff;
+    outline: 2px solid #b3d7ff;
+    border-radius: 3px;
+}
+
+.word-input-group {
+    display: flex;
+    align-items: center;
+    width: 110px;
+    flex-shrink: 0;
+}
+
+textarea { font-size: 0.85rem !important; resize: vertical; }
+.markdown-body h2 { border-left: 5px solid #0d6efd; padding-left: 10px; margin-top: 40px; color: #2c3e50; font-size: 1.6rem;}
+.step-badge { background: #0d6efd; color: white; padding: 2px 8px; border-radius: 4px; font-size: 0.75rem; margin-right: 5px; }
+
+.control-bar {
+    position: sticky; top: 0; background: rgba(255,255,255,0.95); z-index: 100;
+    padding: 10px 0; border-bottom: 1px solid #eee; display: flex; justify-content: space-between; align-items: center;
+    backdrop-filter: blur(5px);
+}
+
+.history-item {
+    padding: 8px; border-bottom: 1px solid #eee; cursor: pointer; font-size: 0.85rem; color: #666;
+}
+.history-item:hover { background: #f8f9fa; color: #0d6efd; }
+
+/* ---------------------------------------------------------
+   Task List Styling
+--------------------------------------------------------- */
+.task-card {
+    border: 1px solid #dee2e6 !important;
+    border-radius: 12px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+    background: #f8f9fa;
+    overflow: hidden;
+    margin-bottom: 20px;
+    flex-shrink: 0 !important; 
+    height: auto !important;
+    min-height: 50px !important;
+}
+
+.task-card-header {
+    background: #fff;
+    border-bottom: 1px solid #f0f0f0;
+    padding: 15px 20px;
+}
+
+.task-item {
+    border: none !important;
+    border-bottom: 1px solid #f9f9f9 !important;
+    padding: 12px 20px;
+    transition: all 0.2s ease;
+    cursor: pointer;
+    position: relative;
+    padding-left: 20px; 
+}
+
+.task-item:hover { background-color: #f8f9fa; }
+
+.task-item.active-task { background-color: #f0f7ff !important; }
+
+.task-item.active-task::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 4px;
+    background-color: #0d6efd;
+    border-top-right-radius: 4px;
+    border-bottom-right-radius: 4px;
+}
+
+.task-delete-btn { opacity: 0; transition: opacity 0.2s; }
+.task-item:hover .task-delete-btn { opacity: 1; }
+
+#taskListContainer {
+    min-height: 50px !important;  
+    max-height: 500px !important;
+    overflow-y: auto !important;
+    display: block !important;
+    width: 100% !important;
+    background-color: #fff;
+    padding-bottom: 10px;
+}
+
+#taskListContainer::-webkit-scrollbar { width: 6px !important; height: 6px !important; }
+#taskListContainer::-webkit-scrollbar-thumb { background: #e0e0e0; border-radius: 4px; }
+
+/* ---------------------------------------------------------
+   Markdown Result Styling (防止挤压)
+--------------------------------------------------------- */
+.markdown-body {
+    font-family: 'SimSun', 'Songti SC', 'Segoe UI', serif; 
+    line-height: 1.8 !important; 
+    color: #333;
+    font-size: 16px;
+}
+
+.markdown-body p {
+    margin-bottom: 1.5em !important; 
+    text-align: justify; 
+    text-indent: 0 !important; /* 确保这里是 0 */
+}
+.markdown-body br {
+    display: block;
+    margin-bottom: 0.5em;
+    content: "";
+}
+
+/* 标题不缩进 */
+.markdown-body h1, 
+.markdown-body h2, 
+.markdown-body h3, 
+.markdown-body h4,
+.markdown-body h5,
+.markdown-body h6 {
+    margin-top: 1.5em !important;
+    margin-bottom: 0.8em !important;
+    font-weight: 600;
+    text-indent: 0 !important; /* 标题取消缩进 */
+}
+
+/* 列表、引用、代码块不缩进 */
+.markdown-body li, 
+.markdown-body blockquote, 
+.markdown-body pre {
+    text-indent: 0 !important;
+}
+
+/* 重写按钮样式 */
+.rewrite-inline-btn {
+    opacity: 0.4;
+    transition: opacity 0.2s;
+    border: none;
+    background: transparent;
+    color: #999;
+    vertical-align: middle;
+}
+.rewrite-inline-btn:hover {
+    opacity: 1;
+    background-color: #e9ecef;
+    color: #0d6efd;
+}
+/* 鼠标悬停在标题上时才显示按钮 */
+h1:hover .hover-show-btns,
+h2:hover .hover-show-btns,
+h3:hover .hover-show-btns,
+h4:hover .hover-show-btns {
+    opacity: 1 !important;
+}
+/* --- 悬停显示操作按钮 --- */
+.hover-show-btns .btn {
+    border-width: 1px;
+    margin-top: -4px; 
+    background-color: white; 
+    line-height: 1.2;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+}
+
+/* 兼容旧的类名 (如果有残留) */
+.rewrite-inline-btn {
+    display: none !important;
+}

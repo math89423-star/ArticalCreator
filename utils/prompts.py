@@ -22,7 +22,7 @@ def get_rewrite_prompt(section_title: str, user_instruction: str, context_summar
    - **段间距**: 段落之间**严禁空行**。请使用单个换行符 (`\\n`) 分隔段落，**不要**使用双换行 (`\\n\\n`)。
    - **标题控制**: **严禁**输出章节标题（如 "### {section_title}"），只输出正文内容。
 3. **内容要求**: 保持学术语气，逻辑严密。
-4. **数据使用**: {custom_data}...
+
 
 请直接开始输出重写后的正文，不要包含“好的”等客套话。
 """

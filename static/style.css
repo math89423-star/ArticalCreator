@@ -283,3 +283,22 @@ h4:hover .hover-show-btns {
 .rewrite-inline-btn {
     display: none !important;
 }
+
+.rewrite-loading-badge {
+    display: inline-flex;
+    align-items: center;
+    margin-left: 10px;
+    font-size: 0.75rem;
+    color: #e67e22; /* 橙色表示进行中 */
+    background-color: #fff3cd;
+    padding: 2px 8px;
+    border-radius: 12px;
+    border: 1px solid #ffeeba;
+    vertical-align: middle;
+    animation: fadeIn 0.3s;
+}
+
+@keyframes fadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}

@@ -6,7 +6,7 @@ console.log("Script.js loaded successfully"); // Debug check
 let currentUserId = null;
 let taskList = [];          
 let currentTaskId = null;   
-let currentRewritingTitle = null;
+
 // Runtime State
 let parsedStructure = []; 
 let fullMarkdownText = "";
@@ -424,65 +424,55 @@ function finishTask(taskId) {
 window.renderEnrichedResult = function(mdText) {
     const container = document.getElementById('resultContent');
     
-    // 编辑时不刷新
+    // 如果有模态框正在打开（用户正在编辑），暂停刷新 DOM
     if (document.querySelector('.modal.show')) return; 
 
-    // 解析 Markdown (保留空格，由 CSS 控制缩进)
+    // [核心修改] 不再清洗全角空格！完全保留文本原样。
+    // 之前是: let displayHtml = mdText.replace(/　　/g, ''); 
+    // 现在改为直接使用 mdText
     const rawHtml = marked.parse(mdText);
     container.innerHTML = rawHtml;
 
-    // 查找所有标题
+    // 查找所有 H1-H4 标签，注入按钮
     const headers = container.querySelectorAll('h1, h2, h3, h4');
     headers.forEach((header, index) => {
-        // 提取纯文本标题
+        // 提取纯文本标题（防止重复注入）
         let titleText = header.firstChild ? header.firstChild.textContent.trim() : header.innerText.trim();
         
-        // --- [核心逻辑] 判断该标题是否正在重写 ---
-        if (currentRewritingTitle === titleText) {
-            // A. 如果正在重写：显示 Loading 标记
-            const loadingSpan = document.createElement('span');
-            loadingSpan.className = 'rewrite-loading-badge';
-            loadingSpan.innerHTML = `
-                <span class="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true" style="width: 0.7em; height: 0.7em; border-width: 0.1em;"></span>
-                AI重写中...
-            `;
-            header.appendChild(loadingSpan);
-        } else {
-            // B. 如果空闲：显示操作按钮 (AI重写/编辑)
-            const btnGroup = document.createElement('span');
-            btnGroup.className = 'ms-3 opacity-0 hover-show-btns';
-            btnGroup.style.transition = 'opacity 0.2s';
-            
-            // AI 重写按钮
-            const btnRewrite = document.createElement('button');
-            btnRewrite.className = 'btn btn-sm btn-outline-primary me-1';
-            btnRewrite.innerHTML = '<i class="bi bi-magic"></i> AI重写';
-            btnRewrite.style.fontSize = '0.75rem';
-            btnRewrite.style.padding = '1px 6px';
-            btnRewrite.onclick = (e) => {
-                e.stopPropagation();
-                openRewriteModalFromResult(titleText);
-            };
+        // 创建按钮容器
+        const btnGroup = document.createElement('span');
+        btnGroup.className = 'ms-3 opacity-0 hover-show-btns';
+        btnGroup.style.transition = 'opacity 0.2s';
+        
+        // 1. AI 重写按钮
+        const btnRewrite = document.createElement('button');
+        btnRewrite.className = 'btn btn-sm btn-outline-primary me-1';
+        btnRewrite.innerHTML = '<i class="bi bi-magic"></i> AI重写';
+        btnRewrite.style.fontSize = '0.75rem';
+        btnRewrite.style.padding = '1px 6px';
+        btnRewrite.onclick = (e) => {
+            e.stopPropagation();
+            openRewriteModalFromResult(titleText);
+        };
 
-            // 人工编辑按钮
-            const btnEdit = document.createElement('button');
-            btnEdit.className = 'btn btn-sm btn-outline-success';
-            btnEdit.innerHTML = '<i class="bi bi-pencil"></i> 编辑';
-            btnEdit.style.fontSize = '0.75rem';
-            btnEdit.style.padding = '1px 6px';
-            btnEdit.onclick = (e) => {
-                e.stopPropagation();
-                openManualEditModal(titleText);
-            };
+        // 2. 人工编辑按钮
+        const btnEdit = document.createElement('button');
+        btnEdit.className = 'btn btn-sm btn-outline-success';
+        btnEdit.innerHTML = '<i class="bi bi-pencil"></i> 编辑';
+        btnEdit.style.fontSize = '0.75rem';
+        btnEdit.style.padding = '1px 6px';
+        btnEdit.onclick = (e) => {
+            e.stopPropagation();
+            openManualEditModal(titleText);
+        };
 
-            btnGroup.appendChild(btnRewrite);
-            btnGroup.appendChild(btnEdit);
-            header.appendChild(btnGroup);
+        btnGroup.appendChild(btnRewrite);
+        btnGroup.appendChild(btnEdit);
+        header.appendChild(btnGroup);
 
-            // 绑定悬停事件
-            header.onmouseenter = () => btnGroup.style.opacity = '1';
-            header.onmouseleave = () => btnGroup.style.opacity = '0';
-        }
+        // 绑定悬停事件
+        header.onmouseenter = () => btnGroup.style.opacity = '1';
+        header.onmouseleave = () => btnGroup.style.opacity = '0';
     });
 };
 
@@ -550,16 +540,10 @@ window.executeRewrite = async function() {
 
     const sectionTitle = document.getElementById('rewriteSectionTitle').value;
     
-    // 关闭模态框
     const modalEl = document.getElementById('rewriteModal');
     const modalInstance = bootstrap.Modal.getOrCreateInstance(modalEl);
     modalInstance.hide();
 
-    // 1. [状态锁定] 设置当前正在重写的标题，并立即刷新视图显示 Loading
-    currentRewritingTitle = sectionTitle;
-    renderEnrichedResult(fullMarkdownText); 
-    
-    // 日志
     appendLog(`🖊️ AI正在重写章节：[${sectionTitle}]...`, 'warn');
     
     try {
@@ -580,13 +564,7 @@ window.executeRewrite = async function() {
         
         if (data.status === 'success') {
             const newContent = data.content;
-            
-            // 2. [状态解锁] 成功后清除锁定状态
-            currentRewritingTitle = null;
-            
-            // 执行替换（replaceSectionContent 内部会自动调用 renderEnrichedResult 刷新视图）
             replaceSectionContent(sectionTitle, newContent);
-            
             appendLog(`✅ 章节 [${sectionTitle}] 重写完成！`, 'info');
             saveCurrentTaskState(); 
         } else {
@@ -594,10 +572,6 @@ window.executeRewrite = async function() {
         }
 
     } catch (e) {
-        // 3. [状态解锁] 失败也要清除锁定状态，否则 Loading 会一直卡住
-        currentRewritingTitle = null;
-        renderEnrichedResult(fullMarkdownText); // 刷新回按钮状态
-        
         alert("重写失败: " + e.message);
         appendLog("❌ 重写失败", 'error');
     }

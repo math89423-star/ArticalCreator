@@ -7,24 +7,69 @@ from typing import Dict, Generator
 from .reference import ReferenceManager
 from .word import TextCleaner
 
-def get_rewrite_prompt(section_title: str, user_instruction: str, context_summary: str, custom_data: str) -> str:
+def get_rewrite_prompt(thesis_title: str, section_title: str, user_instruction: str, context_summary: str, custom_data: str) -> str:
+    
+    # 1. 动态生成上下文指令
+    context_logic_instruction = ""
+    
+    # 如果前文很少（说明是开头部分），指令要强调“开篇”
+    if not context_summary or len(context_summary) < 50:
+        context_logic_instruction = """
+   - **位置判断**: 当前检测为**论文/章节的起始部分**。
+   - **写作逻辑**: 必须**开篇明义**，直接引入主题，**严禁**使用“承接上文”、“综上所述”、“如前所述”等过渡词。应奠定基调，引出后续内容。
+"""
+    # 如果是“结论/总结”类章节，指令要强调“收束”
+    elif any(k in section_title for k in ["结论", "总结", "展望", "结语"]):
+        context_logic_instruction = f"""
+   - **位置判断**: 当前为**结论/收尾部分**。
+   - **前文摘要**: "...{context_summary[-300:]}..."
+   - **写作逻辑**: 必须对前文（尤其是摘要中提到的分析）进行**高屋建瓴的总结**，而不是简单的重复。要对全文进行收束，升华主题，并展望未来。
+"""
+    # 否则默认为“中间部分”，指令强调“承上启下”
+    else:
+        context_logic_instruction = f"""
+   - **位置判断**: 当前为**论文中间章节**。
+   - **前文摘要**: "...{context_summary[-500:]}..."
+   - **写作逻辑**: 必须**紧密承接**上述前文的逻辑流。
+     - 如果前文在分析问题，本段应继续深入或转向对策；
+     - 如果前文是理论，本段应转向应用或实证。
+     - **必须**使用恰当的学术过渡词（如“基于上述分析”、“具体而言”、“与此同时”）来确保文气贯通，避免突兀。
+"""
+
     return f"""
 # 角色
-你是一位专业的学术论文修改师。
+你是一位资深的学术论文评审与修改专家，擅长修正论文逻辑，确保论证严密、主题聚焦。
 
-# 任务
-重写论文章节：**“{section_title}”**。
+# 核心任务
+你正在对论文 **《{thesis_title}》** 中的 **“{section_title}”** 章节进行重写。
 
-# 关键要求
-1. **用户指令 (最高优先级)**: {user_instruction}
-2. **排版格式 (绝对严格执行)**:
+# 关键上下文与逻辑约束 (Context)
+1. **宏观一致性 (题目)**: 
+   - 论文题目: 《{thesis_title}》
+   - *红线*: 你重写的所有内容，必须**严格服务于**这个总标题。**严禁**撰写与该主题无关的通用废话。
+   
+2. **微观聚焦 (章节)**: 
+   - 当前章节: “{section_title}”
+   - *红线*: 内容必须精准聚焦于该小节的特定论点。
+     - 如果标题是“现状”，就只写现状，不要写对策；
+     - 如果标题是“原因”，就只写原因，不要写影响。
+     - **严禁越界**去写其他章节的内容。
+
+3. **上下文连贯性 (Flow)**: {context_logic_instruction}
+
+# 用户修改指令 (最高优先级 - 必须满足)
+{user_instruction}
+
+# 严格排版与写作规范
+1. **排版格式 (Machine Readable)**:
    - **首行缩进**: 输出的**每一个自然段**，开头必须包含**两个全角空格** (　　)。
-   - **段间距**: 段落之间**严禁空行**。请使用单个换行符 (`\\n`) 分隔段落，**不要**使用双换行 (`\\n\\n`)。
-   - **标题控制**: **严禁**输出章节标题（如 "### {section_title}"），只输出正文内容。
-3. **内容要求**: 保持学术语气，逻辑严密。
+   - **段间距**: 段落之间使用**单换行** (`\\n`)，**严禁**使用空行 (`\\n\\n`)。
+   - **纯净输出**: **严禁**输出章节标题（如 "### {section_title}"），**严禁**包含“好的”、“根据要求”等对话内容。只输出正文。
+2. **数据使用**:
+   - 参考数据: {custom_data[:500]}...
+   - 如果用户提供了数据，请优先使用并进行分析；如果没有，请基于通用学术逻辑撰写。
 
-
-请直接开始输出重写后的正文，不要包含“好的”等客套话。
+请开始重写，直接输出正文，注意格式排版。
 """
 
 def get_academic_thesis_prompt(target_words: int, ref_content_list: List[str], current_chapter_title: str, chapter_num: str, has_user_data: bool = False) -> str:
@@ -597,7 +642,10 @@ class PaperAutoWriter:
         """
         非流式生成，直接返回重写后的段落
         """
-        sys_prompt = get_rewrite_prompt(section_title, user_instruction, context[-500:], custom_data)
-        user_prompt = f"请根据指令重写章节：{section_title}\n指令：{user_instruction}"
+        # 传递 title 给 get_rewrite_prompt
+        sys_prompt = get_rewrite_prompt(title, section_title, user_instruction, context[-800:], custom_data)
+        
+        # 用户提示词也带上论文题目，双重保险
+        user_prompt = f"论文题目：{title}\n请重写章节：{section_title}\n修改指令：{user_instruction}"
         
         return self._call_llm(sys_prompt, user_prompt)

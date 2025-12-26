@@ -1,22 +1,25 @@
-console.log("Script.js loaded successfully"); // Debug check
+console.log("Script.js loaded successfully"); 
 
 // ============================================================
-// 0. Global State
+// 0. 全局状态管理
 // ============================================================
 let currentUserId = null;
 let taskList = [];          
 let currentTaskId = null;   
+let currentRewritingTitle = null; 
 
-// Runtime State
+// 运行时状态
 let parsedStructure = []; 
 let fullMarkdownText = "";
 let isPaused = false;
 let abortController = null; 
 let selectedFiles = [];     
-let currentEventIndex = 0;  
+let currentEventIndex = 0;
+// [新增] 章节撤销历史记录 { "章节标题": "旧的内容文本" }
+let sectionUndoHistory = {}; 
 
 marked.setOptions({
-    breaks: true, // 关键：允许单个回车换行
+    breaks: true, 
     gfm: true
 });
 
@@ -25,7 +28,6 @@ marked.setOptions({
 // ============================================================
 
 window.handleLogin = async function() {
-    console.log("Login button clicked"); // Debug check
     const inputId = document.getElementById('userIdInput').value.trim();
     const msgSpan = document.getElementById('loginMsg');
     const btn = document.getElementById('loginBtn');
@@ -41,9 +43,7 @@ window.handleLogin = async function() {
     await verifyAndLogin(inputId, btn, msgSpan);
 };
 
-
 window.onload = async function() {
-    // Attach login listener here to be safe
     const loginBtn = document.getElementById('loginBtn');
     if (loginBtn) {
         loginBtn.addEventListener('click', handleLogin);
@@ -98,7 +98,7 @@ window.logout = function() {
 };
 
 // ============================================================
-// 2. Task Manager Logic
+// 2. 任务管理器逻辑
 // ============================================================
 
 window.initTaskManager = function() {
@@ -126,17 +126,14 @@ window.createNewTask = function() {
     };
     taskList.unshift(newTask); 
     saveTaskListMeta();
-    
     switchTask(newTask.id);
-
-    // Auto expand the task list accordion if Bootstrap is loaded
-    const collapseEl = document.getElementById('taskCollapseArea');
-    if(collapseEl && window.bootstrap) {
-        try {
-            const bsCollapse = bootstrap.Collapse.getOrCreateInstance(collapseEl);
-            bsCollapse.show();
-        } catch(e) { console.log("Bootstrap collapse error", e); }
-    }
+    
+    setTimeout(() => {
+        const collapseEl = document.getElementById('taskCollapseArea');
+        if(collapseEl && window.bootstrap) {
+            try { bootstrap.Collapse.getOrCreateInstance(collapseEl).show(); } catch(e){}
+        }
+    }, 100);
 };
 
 window.switchTask = function(targetId) {
@@ -181,7 +178,6 @@ window.deleteTask = function(e, id) {
     if (id === currentTaskId) {
         currentTaskId = null;
         if (abortController) abortController.abort();
-        
         if (taskList.length > 0) switchTask(taskList[0].id);
         else createNewTask();
     } else {
@@ -236,7 +232,6 @@ function loadTaskState(id) {
 
     if (parsedStructure.length > 0) renderConfigArea();
     if (fullMarkdownText) {
-        // [修改] 使用增强渲染
         renderEnrichedResult(fullMarkdownText);
     }
     if (data.logsHtml) document.getElementById('logArea').innerHTML = data.logsHtml;
@@ -248,6 +243,8 @@ function resetWorkspaceVariables() {
     selectedFiles = []; 
     currentEventIndex = 0;
     isPaused = false;
+    currentRewritingTitle = null; 
+    sectionUndoHistory = {}; // [新增] 切换任务时清空历史记录
     
     document.getElementById('paperTitle').value = "";
     document.getElementById('outlineRaw').value = "";
@@ -261,7 +258,7 @@ function resetWorkspaceVariables() {
 }
 
 // ============================================================
-// 4. Submission & Execution
+// 4. 提交与生成逻辑
 // ============================================================
 
 const paperForm = document.getElementById('paperForm');
@@ -345,7 +342,7 @@ if (paperForm) {
 }
 
 // ============================================================
-// 5. Stream Listener
+// 5. 进度流监听
 // ============================================================
 
 async function subscribeTask(taskId) {
@@ -385,9 +382,8 @@ async function subscribeTask(taskId) {
                             appendLog(data.msg); 
                         } else if (data.type === 'content') {
                             fullMarkdownText += data.md;
-                            // [修改] 使用增强渲染，注入重写按钮
                             renderEnrichedResult(fullMarkdownText);
-                            saveCurrentTaskState(); // 实时保存
+                            saveCurrentTaskState(); 
                         } else if (data.type === 'done') {
                             finishTask(taskId);
                             return;
@@ -417,118 +413,101 @@ function finishTask(taskId) {
 }
 
 // ============================================================
-// 6. UI Helpers & Rewrite Logic
+// 6. UI Helpers & 核心重写/编辑逻辑
 // ============================================================
 
-// [新增] 增强渲染函数：解析 MD，然后在每个标题后注入“重写”按钮
+function normalizeTitle(title) {
+    return title.replace(/\s+/g, '').replace(/AI重写|编辑|重写此节/g, '');
+}
+
+// [核心] 增强渲染函数
 window.renderEnrichedResult = function(mdText) {
     const container = document.getElementById('resultContent');
-    
-    // 如果有模态框正在打开（用户正在编辑），暂停刷新 DOM
-    if (document.querySelector('.modal.show')) return; 
+    const manualModal = document.getElementById('manualEditModal');
+    if (manualModal && manualModal.classList.contains('show')) return; 
 
-    // [核心修改] 不再清洗全角空格！完全保留文本原样。
-    // 之前是: let displayHtml = mdText.replace(/　　/g, ''); 
-    // 现在改为直接使用 mdText
     const rawHtml = marked.parse(mdText);
     container.innerHTML = rawHtml;
 
-    // 查找所有 H1-H4 标签，注入按钮
     const headers = container.querySelectorAll('h1, h2, h3, h4');
-    headers.forEach((header, index) => {
-        // 提取纯文本标题（防止重复注入）
-        let titleText = header.firstChild ? header.firstChild.textContent.trim() : header.innerText.trim();
+    headers.forEach((header) => {
+        let titleText = header.innerText; 
+        if (header.childNodes.length > 0 && header.childNodes[0].nodeType === 3) {
+            titleText = header.childNodes[0].textContent;
+        }
         
-        // 创建按钮容器
-        const btnGroup = document.createElement('span');
-        btnGroup.className = 'ms-3 opacity-0 hover-show-btns';
-        btnGroup.style.transition = 'opacity 0.2s';
-        
-        // 1. AI 重写按钮
-        const btnRewrite = document.createElement('button');
-        btnRewrite.className = 'btn btn-sm btn-outline-primary me-1';
-        btnRewrite.innerHTML = '<i class="bi bi-magic"></i> AI重写';
-        btnRewrite.style.fontSize = '0.75rem';
-        btnRewrite.style.padding = '1px 6px';
-        btnRewrite.onclick = (e) => {
-            e.stopPropagation();
-            openRewriteModalFromResult(titleText);
-        };
+        const cleanTitle = normalizeTitle(titleText);
+        const targetTitle = normalizeTitle(currentRewritingTitle || "");
 
-        // 2. 人工编辑按钮
-        const btnEdit = document.createElement('button');
-        btnEdit.className = 'btn btn-sm btn-outline-success';
-        btnEdit.innerHTML = '<i class="bi bi-pencil"></i> 编辑';
-        btnEdit.style.fontSize = '0.75rem';
-        btnEdit.style.padding = '1px 6px';
-        btnEdit.onclick = (e) => {
-            e.stopPropagation();
-            openManualEditModal(titleText);
-        };
+        if (currentRewritingTitle && cleanTitle === targetTitle) {
+            const loadingSpan = document.createElement('span');
+            loadingSpan.className = 'rewrite-loading-badge';
+            loadingSpan.innerHTML = `
+                <span class="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true" style="width: 0.7em; height: 0.7em; border-width: 0.1em;"></span>
+                AI重写中...
+            `;
+            header.appendChild(loadingSpan);
+        } else {
+            const btnGroup = document.createElement('span');
+            btnGroup.className = 'ms-3 opacity-0 hover-show-btns';
+            btnGroup.style.transition = 'opacity 0.2s';
+            
+            // 1. AI 重写按钮
+            const btnRewrite = document.createElement('button');
+            btnRewrite.className = 'btn btn-sm btn-outline-primary me-1';
+            btnRewrite.innerHTML = '<i class="bi bi-magic"></i> AI重写';
+            btnRewrite.style.fontSize = '0.75rem';
+            btnRewrite.style.padding = '1px 6px';
+            btnRewrite.onclick = (e) => {
+                e.stopPropagation();
+                openRewriteModalFromResult(titleText.trim());
+            };
 
-        btnGroup.appendChild(btnRewrite);
-        btnGroup.appendChild(btnEdit);
-        header.appendChild(btnGroup);
+            // 2. 人工编辑按钮
+            const btnEdit = document.createElement('button');
+            btnEdit.className = 'btn btn-sm btn-outline-success me-1';
+            btnEdit.innerHTML = '<i class="bi bi-pencil"></i> 编辑';
+            btnEdit.style.fontSize = '0.75rem';
+            btnEdit.style.padding = '1px 6px';
+            btnEdit.onclick = (e) => {
+                e.stopPropagation();
+                openManualEditModal(titleText.trim());
+            };
 
-        // 绑定悬停事件
-        header.onmouseenter = () => btnGroup.style.opacity = '1';
-        header.onmouseleave = () => btnGroup.style.opacity = '0';
+            // 3. [新增] 撤销/回退按钮
+            const btnUndo = document.createElement('button');
+            btnUndo.className = 'btn btn-sm btn-outline-secondary';
+            btnUndo.innerHTML = '<i class="bi bi-arrow-counterclockwise"></i> 撤销';
+            btnUndo.style.fontSize = '0.75rem';
+            btnUndo.style.padding = '1px 6px';
+            btnUndo.onclick = (e) => {
+                e.stopPropagation();
+                performUndo(titleText.trim());
+            };
+
+            btnGroup.appendChild(btnRewrite);
+            btnGroup.appendChild(btnEdit);
+            btnGroup.appendChild(btnUndo);
+            header.appendChild(btnGroup);
+
+            header.onmouseenter = () => btnGroup.style.opacity = '1';
+            header.onmouseleave = () => btnGroup.style.opacity = '0';
+        }
     });
-};
-
-
-window.openManualEditModal = function(sectionTitle) {
-    // 1. 获取当前该章节的文本
-    const content = extractSectionContent(sectionTitle);
-    
-    if (!content) {
-        // 如果提取不到，可能是标题格式有误或者内容为空
-        if(!confirm(`未找到章节 [${sectionTitle}] 的正文内容，是否创建新内容？`)) return;
-    }
-
-    // 2. 填充模态框
-    document.getElementById('manualEditSectionTitle').value = sectionTitle;
-    document.getElementById('manualEditContent').value = content;
-
-    // 3. 显示
-    const modalEl = document.getElementById('manualEditModal');
-    const modalInstance = bootstrap.Modal.getOrCreateInstance(modalEl);
-    modalInstance.show();
 };
 
 window.extractSectionContent = function(title) {
     const escapedTitle = escapeRegExp(title);
-    // 匹配: 标题行(Group1) + 正文(Group2) + (下一个标题或结尾)
     const regex = new RegExp(`(#{1,6}\\s*${escapedTitle}\\s*\\n)([\\s\\S]*?)(?=\\n\\s*#{1,6}\\s|$)`, 'i');
     const match = fullMarkdownText.match(regex);
-    if (match) {
-        return match[2].trim(); // 返回正文内容
-    }
+    if (match) return match[2].trim();
     return "";
 };
 
-function saveManualEdit() {
-    const title = document.getElementById('manualEditSectionTitle').value;
-    const newContent = document.getElementById('manualEditContent').value;
-
-    replaceSectionContent(title, newContent);
-    
-    // 关闭模态框
-    const modalEl = document.getElementById('manualEditModal');
-    const modalInstance = bootstrap.Modal.getInstance(modalEl);
-    modalInstance.hide();
-
-    appendLog(`📝 人工修订章节 [${title}] 已保存`, 'success');
-    saveCurrentTaskState();
-    
-    // 强制刷新一次视图（因为编辑期间视图更新被暂停了）
-    renderEnrichedResult(fullMarkdownText);
-}
-
+// --- 功能 A: AI 重写 ---
 function openRewriteModalFromResult(sectionTitle) {
     document.getElementById('rewriteSectionTitle').value = sectionTitle;
     document.getElementById('rewriteInstruction').value = ""; 
-    
     const modalEl = document.getElementById('rewriteModal');
     const modalInstance = bootstrap.Modal.getOrCreateInstance(modalEl);
     modalInstance.show();
@@ -544,6 +523,9 @@ window.executeRewrite = async function() {
     const modalInstance = bootstrap.Modal.getOrCreateInstance(modalEl);
     modalInstance.hide();
 
+    currentRewritingTitle = sectionTitle;
+    renderEnrichedResult(fullMarkdownText);
+    
     appendLog(`🖊️ AI正在重写章节：[${sectionTitle}]...`, 'warn');
     
     try {
@@ -564,6 +546,7 @@ window.executeRewrite = async function() {
         
         if (data.status === 'success') {
             const newContent = data.content;
+            currentRewritingTitle = null;
             replaceSectionContent(sectionTitle, newContent);
             appendLog(`✅ 章节 [${sectionTitle}] 重写完成！`, 'info');
             saveCurrentTaskState(); 
@@ -572,68 +555,109 @@ window.executeRewrite = async function() {
         }
 
     } catch (e) {
+        currentRewritingTitle = null;
+        renderEnrichedResult(fullMarkdownText); 
         alert("重写失败: " + e.message);
         appendLog("❌ 重写失败", 'error');
     }
 };
 
-window.renderTaskListUI = function() {
-    const container = document.getElementById('taskListContainer');
-    if (!container) return;
-    container.innerHTML = "";
-    
-    if (taskList.length === 0) {
-        container.innerHTML = "<div class='text-center text-muted py-3 small'>暂无任务</div>";
-        return;
-    }
+// --- 功能 B: 人工编辑 ---
+window.openManualEditModal = function(sectionTitle) {
+    const content = extractSectionContent(sectionTitle);
+    if (!content && !confirm(`未找到章节 [${sectionTitle}] 的正文内容，是否创建新内容？`)) return;
 
-    taskList.forEach(task => {
-        const isActive = task.id === currentTaskId;
-        
-        const statusConfig = {
-            'draft':     { icon: 'bi-pencil-square', color: 'text-secondary', text: '草稿' },
-            'running':   { icon: 'spinner-grow spinner-grow-sm', color: 'text-success', text: '生成中...' },
-            'paused':    { icon: 'bi-pause-circle-fill', color: 'text-warning', text: '已暂停' },
-            'completed': { icon: 'bi-check-circle-fill', color: 'text-primary', text: '已完成' },
-            'stopped':   { icon: 'bi-stop-circle-fill', color: 'text-danger', text: '已停止' }
-        };
-        
-        const st = statusConfig[task.status] || statusConfig['draft'];
-        const iconHtml = st.icon.includes('spinner') 
-            ? `<span class="${st.icon}" role="status" aria-hidden="true"></span>` 
-            : `<i class="bi ${st.icon}"></i>`;
+    document.getElementById('manualEditSectionTitle').value = sectionTitle;
+    document.getElementById('manualEditContent').value = content;
 
-        const itemDiv = document.createElement('div');
-        itemDiv.className = `list-group-item task-item d-flex justify-content-between align-items-center ${isActive ? 'active-task' : ''}`;
-        itemDiv.onclick = () => switchTask(task.id);
-        
-        const date = new Date(task.timestamp);
-        const timeStr = date.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
-
-        itemDiv.innerHTML = `
-            <div class="d-flex flex-column text-truncate" style="width: 85%;">
-                <div class="fw-bold text-dark text-truncate mb-1" style="font-size: 0.9rem;">
-                    ${task.title || '未命名任务'}
-                </div>
-                <div class="d-flex align-items-center small">
-                    <span class="${st.color} me-2 d-flex align-items-center" style="font-size: 0.75rem;">
-                        ${iconHtml} <span class="ms-1">${st.text}</span>
-                    </span>
-                    <span class="text-muted" style="font-size: 0.75rem;">${timeStr}</span>
-                </div>
-            </div>
-            <button onclick="deleteTask(event, '${task.id}')" class="btn btn-sm btn-link text-danger p-0 task-delete-btn" title="删除">
-                <i class="bi bi-trash"></i>
-            </button>
-        `;
-        container.appendChild(itemDiv);
-    });
+    const modalEl = document.getElementById('manualEditModal');
+    const modalInstance = bootstrap.Modal.getOrCreateInstance(modalEl);
+    modalInstance.show();
 };
 
+window.saveManualEdit = function() {
+    const title = document.getElementById('manualEditSectionTitle').value;
+    const newContent = document.getElementById('manualEditContent').value;
+
+    replaceSectionContent(title, newContent);
+    
+    const modalEl = document.getElementById('manualEditModal');
+    const modalInstance = bootstrap.Modal.getInstance(modalEl);
+    modalInstance.hide();
+
+    appendLog(`📝 人工修订章节 [${title}] 已保存`, 'info');
+    saveCurrentTaskState();
+};
+
+// --- 功能 C: 撤销/回退 ---
+window.performUndo = function(title) {
+    if (!sectionUndoHistory[title]) {
+        alert("此段落未进行过重写，无法回退。");
+        return;
+    }
+    
+    if(!confirm(`确定要回退章节 [${title}] 到上一个版本吗？\n(注意：这将把当前内容和历史记录进行互换)`)) return;
+    
+    const prevContent = sectionUndoHistory[title];
+    
+    // 执行恢复 (注意：replaceSectionContent 内部会自动把“当前被替换掉的内容”再次存入历史记录)
+    // 从而实现了 Toggle (A <-> B) 的效果，允许用户反悔撤销
+    replaceSectionContent(title, prevContent);
+    
+    appendLog(`Start Undo: [${title}]`, 'info');
+};
+
+// [核心] 正则替换 + 强制格式化 + [新增] 自动备份历史
+window.replaceSectionContent = function(title, newContent) {
+    const escapedTitle = escapeRegExp(title);
+    
+    // 1. 预处理
+    let formattedText = newContent.trimEnd().replace(/\r\n/g, '\n');
+    formattedText = formattedText.replace(/\n\s*\n/g, '\n'); // 压缩空行
+
+    // 2. 强制缩进处理
+    formattedText = formattedText.split('\n').map(line => {
+        let l = line.trimEnd(); 
+        if (!l) return l; 
+        if (/^(\#|\||`|- |\* |> )/.test(l.trimStart())) return l;
+        if (l.startsWith('  ')) return l.replace(/^( +)/, m => '　'.repeat(Math.ceil(m.length/2)));
+        if (l.startsWith('　　')) return l;
+        return '　　' + l.trimStart();
+    }).join('\n');
+
+    const regex = new RegExp(`(#{1,6}\\s*${escapedTitle}\\s*\\n)([\\s\\S]*?)(?=\\n\\s*#{1,6}\\s|$)`, 'i');
+    const match = fullMarkdownText.match(regex);
+    
+    if (match) {
+        // [新增] 在替换前，备份当前内容到历史记录
+        // 注意：这里保存的是去除首尾空白的原始文本，方便下次 restore
+        const currentContent = match[2].trim(); 
+        sectionUndoHistory[title] = currentContent;
+
+        const oldSection = match[0];
+        const header = match[1]; 
+        const replacement = `${header}${formattedText}\n\n`;
+        
+        fullMarkdownText = fullMarkdownText.replace(oldSection, replacement);
+        
+        const container = document.querySelector('.output-area');
+        const scrollPos = container ? container.scrollTop : 0;
+        
+        renderEnrichedResult(fullMarkdownText);
+        setTimeout(() => { if(container) container.scrollTop = scrollPos; }, 50);
+        
+    } else {
+        console.warn("未在正文中找到章节，追加到末尾");
+        fullMarkdownText += `\n\n### ${title}\n\n${formattedText}\n\n`;
+        renderEnrichedResult(fullMarkdownText);
+    }
+};
+
+// ... (其他辅助函数保持不变) ...
 window.lockUI = function(locked) {
     document.getElementById('btnSubmit').disabled = locked;
     const ctrlDiv = document.getElementById('controlButtons');
-    ctrlDiv.style.display = 'block'; 
+    if(ctrlDiv) ctrlDiv.style.display = 'block'; 
 
     const inputs = ['paperTitle', 'outlineRaw', 'references', 'customData', 'globalTotalWords', 'fileInput'];
     inputs.forEach(id => { const el = document.getElementById(id); if(el) el.disabled = locked; });
@@ -654,11 +678,9 @@ window.updatePauseBtnState = function() {
     btn.className = isPaused ? "btn btn-info btn-sm me-2" : "btn btn-warning btn-sm me-2";
 };
 
-// --- Controls ---
 window.togglePause = async function() { 
     const action = isPaused ? 'resume' : 'pause';
     await authenticatedFetch('/control', {method: 'POST', body: JSON.stringify({ task_id: currentTaskId, action: action })});
-    
     isPaused = !isPaused;
     const task = taskList.find(t => t.id === currentTaskId);
     if(task) { task.status = isPaused ? 'paused' : 'running'; saveTaskListMeta(); renderTaskListUI(); }
@@ -666,24 +688,15 @@ window.togglePause = async function() {
     appendLog(isPaused ? "⏸ 任务已暂停" : "▶ 任务继续", 'warn');
 };
 
-async function stopTask() { 
+window.stopTask = async function() { 
     if(!confirm("确定停止当前任务？")) return;
     if(abortController) abortController.abort();
-    
     await authenticatedFetch('/control', {method: 'POST', body: JSON.stringify({ task_id: currentTaskId, action: 'stop' })});
-    
     const task = taskList.find(t => t.id === currentTaskId);
     if(task) { task.status = 'stopped'; saveTaskListMeta(); renderTaskListUI(); }
-    
     lockUI(false);
     appendLog("⏹ 任务已手动停止", 'error');
     saveCurrentTaskState();
-}
-
-window.createNewPaper = function() {
-    if(confirm("即将创建一个新的论文任务，是否继续？")) {
-        createNewTask();
-    }
 };
 
 window.clearResults = function(silent = false) {
@@ -693,13 +706,11 @@ window.clearResults = function(silent = false) {
     currentEventIndex = 0; 
     const task = taskList.find(t => t.id === currentTaskId);
     if(task) { task.status = 'draft'; saveTaskListMeta(); renderTaskListUI(); }
-    
     lockUI(false);
     saveCurrentTaskState();
     if(!silent) appendLog("🗑️ 内容已清空", 'warn');
 };
 
-// --- Basic Tools ---
 window.authenticatedFetch = async function(url, options = {}) {
     if (!options.headers) options.headers = {};
     if (!(options.body instanceof FormData)) options.headers['Content-Type'] = 'application/json';
@@ -713,7 +724,6 @@ window.appendLog = function(msg, type = 'info') {
     let color = '#00ff9d';
     if (type === 'error') color = '#ff4d4d';
     if (type === 'warn') color = '#ffc107';
-    
     const html = `<div style="color:${color}; border-bottom:1px dashed #333; padding:2px 0;">[${time}] ${msg}</div>`;
     logArea.innerHTML += html;
     logArea.scrollTop = logArea.scrollHeight;
@@ -722,7 +732,6 @@ window.appendLog = function(msg, type = 'info') {
 window.generateUUID = function() { return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => (c === 'x' ? Math.random() * 16 | 0 : (Math.random() * 16 | 0) & 0x3 | 0x8).toString(16)); };
 window.escapeRegExp = function(string) { return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); };
 
-// --- Files & Export ---
 window.handleFileSelect = function() {
     const input = document.getElementById('fileInput');
     selectedFiles = selectedFiles.concat(Array.from(input.files));
@@ -754,10 +763,6 @@ window.exportToDocx = async function() {
         }
     } catch(e) { alert("导出失败"); }
 };
-
-// ============================================================
-// 7. Outline Parsing Logic
-// ============================================================
 
 window.loadDemoOutline = function() {
     document.getElementById('outlineRaw').value = `摘要\n第一章 绪论\n1.1 研究背景\n1.2 研究意义\n第二章 核心理论\n2.1 理论基础\n第三章 总结\n参考文献`;
@@ -979,75 +984,3 @@ function openRewriteModal(gIdx, cIdx) {
     const modalInstance = bootstrap.Modal.getOrCreateInstance(modalEl);
     modalInstance.show();
 }
-
-// [核心] 正则替换正文内容
-window.replaceSectionContent = function(title, newContent) {
-    const escapedTitle = escapeRegExp(title);
-    
-    // ============================================================
-    // 1. 强制格式化 (核心修改)
-    // ============================================================
-    
-    // A. 预处理：统一换行符，去除尾部空白
-    let formattedText = newContent.trimEnd().replace(/\r\n/g, '\n');
-
-    // B. 压缩空行：将 \n\n+ (两个及以上换行) 替换为 \n (单换行)
-    // 这解决了“两段之间不要有空行”的问题 (在 breaks:true 模式下)
-    formattedText = formattedText.replace(/\n\s*\n/g, '\n');
-
-    // C. 强制缩进：处理每一行
-    formattedText = formattedText.split('\n').map(line => {
-        let l = line.trimEnd(); // 去除行尾空格
-        if (!l) return l; // 空行跳过
-
-        // 跳过 Markdown 语法行 (标题、表格、代码块、列表、引用)
-        if (/^(\#|\||`|- |\* |> )/.test(l.trimStart())) {
-            return l;
-        }
-
-        // 如果已经有全角空格，保留
-        if (l.startsWith('　　')) return l;
-
-        // 如果是普通空格开头，替换为全角
-        // 比如 "  段落" -> "　　段落"
-        if (l.startsWith('  ')) {
-             return l.replace(/^( +)/, m => '　'.repeat(Math.ceil(m.length/2)));
-        }
-
-        // 否则，强制添加全角缩进
-        return '　　' + l.trimStart();
-    }).join('\n');
-
-    // ============================================================
-    // 2. 执行替换
-    // ============================================================
-    
-    const regex = new RegExp(`(#{1,6}\\s*${escapedTitle}\\s*\\n)([\\s\\S]*?)(?=\\n\\s*#{1,6}\\s|$)`, 'i');
-    
-    const match = fullMarkdownText.match(regex);
-    
-    if (match) {
-        const oldSection = match[0];
-        const header = match[1]; 
-        
-        // 拼接：标题 + 换行 + 格式化后的内容 + 两个换行(与下节隔开)
-        const replacement = `${header}${formattedText}\n\n`;
-        
-        fullMarkdownText = fullMarkdownText.replace(oldSection, replacement);
-        
-        // 刷新视图
-        const container = document.querySelector('.output-area');
-        const scrollPos = container ? container.scrollTop : 0;
-        
-        renderEnrichedResult(fullMarkdownText);
-        
-        setTimeout(() => {
-            if(container) container.scrollTop = scrollPos;
-        }, 50);
-        
-    } else {
-        console.warn("未在正文中找到章节，追加到末尾");
-        fullMarkdownText += `\n\n### ${title}\n\n${formattedText}\n\n`;
-        renderEnrichedResult(fullMarkdownText);
-    }
-};

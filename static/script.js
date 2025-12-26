@@ -483,9 +483,9 @@ window.renderEnrichedResult = function(mdText) {
                 openManualEditModal(titleText.trim());
             };
 
-            // 3. [新增] 撤销/回退按钮
+            // 3. 撤销/回退按钮
             const btnUndo = document.createElement('button');
-            btnUndo.className = 'btn btn-sm btn-outline-secondary';
+            btnUndo.className = 'btn btn-sm btn-outline-secondary me-1';
             btnUndo.innerHTML = '<i class="bi bi-arrow-counterclockwise"></i> 撤销';
             btnUndo.style.fontSize = '0.75rem';
             btnUndo.style.padding = '1px 6px';
@@ -494,9 +494,21 @@ window.renderEnrichedResult = function(mdText) {
                 performUndo(titleText.trim());
             };
 
+            // 4. [新增] 删除/清空按钮
+            const btnDelete = document.createElement('button');
+            btnDelete.className = 'btn btn-sm btn-outline-danger';
+            btnDelete.innerHTML = '<i class="bi bi-trash"></i> 删除';
+            btnDelete.style.fontSize = '0.75rem';
+            btnDelete.style.padding = '1px 6px';
+            btnDelete.onclick = (e) => {
+                e.stopPropagation();
+                deleteSectionContent(titleText.trim());
+            };
+
             btnGroup.appendChild(btnRewrite);
             btnGroup.appendChild(btnEdit);
             btnGroup.appendChild(btnUndo);
+            btnGroup.appendChild(btnDelete); // 添加到按钮组
             header.appendChild(btnGroup);
 
             header.onmouseenter = () => btnGroup.style.opacity = '1';
@@ -916,7 +928,10 @@ window.renderConfigArea = function() {
                     <input type="number" class="form-control form-control-sm word-input" value="${child.words}" step="50" min="0" onchange="updateLeaf(${gIdx}, ${cIdx}, 'words', this.value)">
                     <span class="ms-1 small text-muted">字</span>
                 </div>
-                <button class="btn btn-sm text-secondary ms-2" onclick="deleteLeaf(${gIdx}, ${cIdx})"><i class="bi bi-x"></i></button>
+                
+                <button class="btn btn-sm text-danger ms-2" onclick="deleteLeaf(${gIdx}, ${cIdx})" title="删除此写作点">
+                    <i class="bi bi-trash3"></i>
+                </button>
             `;
             body.appendChild(row);
         });
@@ -967,7 +982,15 @@ function sortLeaves(gIdx) {
     renderConfigArea();
 }
 
-function deleteLeaf(gIdx, cIdx) { parsedStructure[gIdx].children.splice(cIdx, 1); renderConfigArea(); }
+function deleteLeaf(gIdx, cIdx) { 
+    const targetTitle = parsedStructure[gIdx].children[cIdx].text || "该小节";
+    
+    if(confirm(`⚠️ 危险操作确认\n\n您确定要永久删除写作点：\n“${targetTitle}” 吗？\n\n删除后无法恢复，请确认。`)) {
+        parsedStructure[gIdx].children.splice(cIdx, 1); 
+        renderConfigArea(); 
+    }
+}
+
 function addLeaf(gIdx) {
     const title = prompt("请输入新小节标题");
     if (title) { parsedStructure[gIdx].children.push({ text: title, isParent: false, words: 500 }); sortLeaves(gIdx); }
@@ -999,3 +1022,13 @@ function openRewriteModal(gIdx, cIdx) {
     const modalInstance = bootstrap.Modal.getOrCreateInstance(modalEl);
     modalInstance.show();
 }
+
+window.deleteSectionContent = function(title) {
+    if(!confirm(`⚠️ 确定要清空章节 [${title}] 的正文内容吗？\n\n(提示：标题将保留。删除前的内容会自动存入历史记录，您可以通过“撤销”按钮恢复。)`)) return;
+    
+    // 利用 replaceSectionContent 将内容替换为空字符串
+    // 这会自动触发 saveCurrentTaskState 和 sectionUndoHistory 的备份逻辑
+    replaceSectionContent(title, "");
+    
+    appendLog(`🗑️ 已清空章节内容：[${title}]`, 'warn');
+};

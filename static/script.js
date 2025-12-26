@@ -189,6 +189,7 @@ function saveTaskListMeta() {
     localStorage.setItem(`tasks_meta_${currentUserId}`, JSON.stringify(taskList));
 }
 
+// [核心修改] 保存状态时，包含撤销历史记录
 function saveCurrentTaskState() {
     if (!currentUserId || !currentTaskId) return;
 
@@ -202,6 +203,10 @@ function saveCurrentTaskState() {
         structure: parsedStructure,
         eventIndex: currentEventIndex, 
         logsHtml: document.getElementById('logArea').innerHTML, 
+        
+        // [关键修复] 将撤销历史也保存起来！
+        undoHistory: sectionUndoHistory, 
+        
         timestamp: Date.now()
     };
 
@@ -215,6 +220,7 @@ function saveCurrentTaskState() {
     }
 }
 
+// [核心修改] 加载状态时，恢复撤销历史记录
 function loadTaskState(id) {
     const json = localStorage.getItem(`draft_${currentUserId}_${id}`);
     if (!json) return; 
@@ -229,6 +235,9 @@ function loadTaskState(id) {
     parsedStructure = data.structure || [];
     fullMarkdownText = data.content || "";
     currentEventIndex = data.eventIndex || 0;
+    
+    // [关键修复] 恢复历史记录，如果没有则初始化为空对象
+    sectionUndoHistory = data.undoHistory || {}; 
 
     if (parsedStructure.length > 0) renderConfigArea();
     if (fullMarkdownText) {
@@ -244,7 +253,7 @@ function resetWorkspaceVariables() {
     currentEventIndex = 0;
     isPaused = false;
     currentRewritingTitle = null; 
-    sectionUndoHistory = {}; // [新增] 切换任务时清空历史记录
+    sectionUndoHistory = {}; 
     
     document.getElementById('paperTitle').value = "";
     document.getElementById('outlineRaw').value = "";
@@ -417,7 +426,7 @@ function finishTask(taskId) {
 // ============================================================
 
 function normalizeTitle(title) {
-    return title.replace(/\s+/g, '').replace(/AI重写|编辑|重写此节/g, '');
+    return title.replace(/\s+/g, '').replace(/AI重写|编辑|撤销|重写此节/g, '');
 }
 
 // [核心] 增强渲染函数
@@ -527,6 +536,7 @@ window.executeRewrite = async function() {
     renderEnrichedResult(fullMarkdownText);
     
     appendLog(`🖊️ AI正在重写章节：[${sectionTitle}]...`, 'warn');
+    const originalContent = extractSectionContent(sectionTitle);
     
     try {
         const formData = {
@@ -534,7 +544,8 @@ window.executeRewrite = async function() {
             section_title: sectionTitle,
             instruction: instruction,
             context: fullMarkdownText.slice(0, 1500), 
-            custom_data: document.getElementById('customData').value
+            custom_data: document.getElementById('customData').value,
+            original_content: originalContent
         };
 
         const res = await authenticatedFetch('/rewrite_section', {
@@ -591,20 +602,25 @@ window.saveManualEdit = function() {
 
 // --- 功能 C: 撤销/回退 ---
 window.performUndo = function(title) {
+    // 1. 检查历史记录是否存在
     if (!sectionUndoHistory[title]) {
-        alert("此段落未进行过重写，无法回退。");
+        alert("此段落未进行过重写或修改，无历史版本可回退。");
         return;
     }
     
+    // 2. 确认提示
     if(!confirm(`确定要回退章节 [${title}] 到上一个版本吗？\n(注意：这将把当前内容和历史记录进行互换)`)) return;
     
+    // 3. 获取旧内容
     const prevContent = sectionUndoHistory[title];
     
-    // 执行恢复 (注意：replaceSectionContent 内部会自动把“当前被替换掉的内容”再次存入历史记录)
-    // 从而实现了 Toggle (A <-> B) 的效果，允许用户反悔撤销
+    // 4. 执行恢复 (replaceSectionContent 会自动把"当前内容"存入历史，实现 A<->B 互切)
     replaceSectionContent(title, prevContent);
     
-    appendLog(`Start Undo: [${title}]`, 'info');
+    // [关键修复] 撤销动作发生后，必须立即保存状态到本地存储
+    saveCurrentTaskState();
+    
+    appendLog(`↺ 已回退章节：[${title}]`, 'info');
 };
 
 // [核心] 正则替换 + 强制格式化 + [新增] 自动备份历史
@@ -629,8 +645,7 @@ window.replaceSectionContent = function(title, newContent) {
     const match = fullMarkdownText.match(regex);
     
     if (match) {
-        // [新增] 在替换前，备份当前内容到历史记录
-        // 注意：这里保存的是去除首尾空白的原始文本，方便下次 restore
+        // 备份历史记录
         const currentContent = match[2].trim(); 
         sectionUndoHistory[title] = currentContent;
 

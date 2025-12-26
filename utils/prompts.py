@@ -7,7 +7,7 @@ from typing import Dict, Generator
 from .reference import ReferenceManager
 from .word import TextCleaner
 
-def get_rewrite_prompt(thesis_title: str, section_title: str, user_instruction: str, context_summary: str, custom_data: str) -> str:
+def get_rewrite_prompt(thesis_title: str, section_title: str, user_instruction: str, context_summary: str, custom_data: str, original_content: str) -> str:
     
     # 1. 动态生成上下文指令
     context_logic_instruction = ""
@@ -56,6 +56,17 @@ def get_rewrite_prompt(thesis_title: str, section_title: str, user_instruction: 
      - **严禁越界**去写其他章节的内容。
 
 3. **上下文连贯性 (Flow)**: {context_logic_instruction}
+
+4. **原文基础 (Reference Base)**:
+   - **原文内容**: 
+     ```
+     {original_content[:2000]} 
+     ```
+   - **处理策略**: 
+     - 用户的意图通常是在**原文基础上进行润色、修正或扩充**。
+     - **除非**用户指令明确要求“完全重写”、“推翻重来”，否则请**保留原文的核心观点和数据**，重点优化其表达、逻辑结构和学术规范性。
+     - 如果原文非常简陋，请进行**扩写和深化**。
+
 
 # 用户修改指令 (最高优先级 - 必须满足)
 {user_instruction}
@@ -638,14 +649,13 @@ class PaperAutoWriter:
         else:
             yield f"data: {json.dumps({'type': 'log', 'msg': '🛑 任务已完全终止 (已跳过后续内容)'})}\n\n"
 
-    def rewrite_chapter(self, title: str, section_title: str, user_instruction: str, context: str, custom_data: str) -> str:
+    def rewrite_chapter(self, title: str, section_title: str, user_instruction: str, context: str, custom_data: str, original_content: str = "") -> str:
         """
         非流式生成，直接返回重写后的段落
         """
-        # 传递 title 给 get_rewrite_prompt
-        sys_prompt = get_rewrite_prompt(title, section_title, user_instruction, context[-800:], custom_data)
+        # 传递 original_content 给 prompt
+        sys_prompt = get_rewrite_prompt(title, section_title, user_instruction, context[-800:], custom_data, original_content)
         
-        # 用户提示词也带上论文题目，双重保险
-        user_prompt = f"论文题目：{title}\n请重写章节：{section_title}\n修改指令：{user_instruction}"
+        user_prompt = f"论文题目：{title}\n请修改章节：{section_title}\n用户的具体修改意见：{user_instruction}"
         
         return self._call_llm(sys_prompt, user_prompt)

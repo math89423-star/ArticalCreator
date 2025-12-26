@@ -290,6 +290,7 @@ def rewrite_section():
     instruction = data.get('instruction')
     context = data.get('context', '') 
     custom_data = data.get('custom_data', '')
+    original_content = data.get('original_content', '')
     
     if not section_title: return jsonify({"error": "No section title"}), 400
 
@@ -297,7 +298,7 @@ def rewrite_section():
     
     try:
         # 调用同步生成方法 (需确保 PaperAutoWriter 类中有 rewrite_chapter 方法)
-        new_content = writer.rewrite_chapter(title, section_title, instruction, context, custom_data)
+        new_content = writer.rewrite_chapter(title, section_title, instruction, context, custom_data, original_content)
         
         # 简单清洗，防止 LLM 自己带了标题导致重复
         # 移除以 # 开头的包含 section_title 的行

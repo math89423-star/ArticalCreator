@@ -15,7 +15,7 @@ let isPaused = false;
 let abortController = null; 
 let selectedFiles = [];     
 let currentEventIndex = 0;
-// [新增] 章节撤销历史记录 { "章节标题": "旧的内容文本" }
+// 章节撤销历史记录 { "章节标题": "旧的内容文本" }
 let sectionUndoHistory = {}; 
 
 marked.setOptions({
@@ -136,6 +136,11 @@ window.createNewTask = function() {
     }, 100);
 };
 
+// [新增] 兼容 index.html 中的 createNewPaper 调用
+window.createNewPaper = function() {
+    createNewTask();
+};
+
 window.switchTask = function(targetId) {
     if (currentTaskId === targetId && document.getElementById('paperTitle').value) return; 
 
@@ -185,11 +190,86 @@ window.deleteTask = function(e, id) {
     }
 };
 
+// [核心修复] 补全缺失的 renderTaskListUI 函数
+window.renderTaskListUI = function() {
+    const container = document.getElementById('taskListContainer');
+    if (!container) return;
+    
+    container.innerHTML = '';
+    
+    // 按时间倒序排列
+    const sortedTasks = [...taskList].sort((a, b) => b.timestamp - a.timestamp);
+
+    if (sortedTasks.length === 0) {
+        container.innerHTML = '<div class="text-center text-muted py-3 small">暂无任务</div>';
+        return;
+    }
+
+    sortedTasks.forEach(task => {
+        const isActive = (task.id === currentTaskId);
+        const item = document.createElement('div');
+        // 使用 style.css 中定义的类
+        item.className = `task-item ${isActive ? 'active-task' : ''}`;
+        
+        let statusBadge = '';
+        if (task.status === 'running') statusBadge = '<span class="badge bg-primary bg-opacity-10 text-primary ms-2" style="font-size:0.7rem">生成中</span>';
+        else if (task.status === 'paused') statusBadge = '<span class="badge bg-warning bg-opacity-10 text-warning ms-2" style="font-size:0.7rem">暂停</span>';
+        else if (task.status === 'completed') statusBadge = '<span class="badge bg-success bg-opacity-10 text-success ms-2" style="font-size:0.7rem">完成</span>';
+        
+        item.innerHTML = `
+            <div class="d-flex justify-content-between align-items-center mb-1">
+                <div class="d-flex align-items-center" style="max-width: 75%;">
+                    <span class="fw-bold text-truncate text-dark" style="font-size: 0.9rem;">${task.title || '未命名任务'}</span>
+                    ${statusBadge}
+                </div>
+                <button class="btn btn-link text-danger p-0 task-delete-btn" onclick="deleteTask(event, '${task.id}')" title="删除任务">
+                    <i class="bi bi-trash"></i>
+                </button>
+            </div>
+            <div class="d-flex justify-content-between align-items-center">
+                <small class="text-muted" style="font-size: 0.75rem">
+                    <i class="bi bi-clock"></i> ${new Date(task.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
+                </small>
+                <small class="text-muted" style="font-size: 0.75rem">ID: ${task.id.slice(0,4)}</small>
+            </div>
+        `;
+        
+        item.onclick = (e) => {
+            // 点击删除按钮时不切换
+            if (e.target.closest('.task-delete-btn')) return;
+            switchTask(task.id);
+        };
+        
+        container.appendChild(item);
+    });
+};
+
+// [新增] 简单的历史记录弹窗逻辑
+window.showHistory = function() {
+    const modalEl = document.getElementById('historyModal');
+    const container = document.getElementById('historyList');
+    container.innerHTML = '';
+    
+    taskList.forEach(t => {
+        const d = new Date(t.timestamp);
+        container.innerHTML += `
+            <div class="p-2 border-bottom history-item" onclick="switchTask('${t.id}'); bootstrap.Modal.getInstance(document.getElementById('historyModal')).hide();">
+                <div class="d-flex justify-content-between">
+                    <strong>${t.title}</strong>
+                    <span class="text-muted small">${d.toLocaleDateString()} ${d.toLocaleTimeString()}</span>
+                </div>
+                <div class="small text-muted">ID: ${t.id} | 状态: ${t.status}</div>
+            </div>
+        `;
+    });
+    
+    new bootstrap.Modal(modalEl).show();
+};
+
 function saveTaskListMeta() {
     localStorage.setItem(`tasks_meta_${currentUserId}`, JSON.stringify(taskList));
 }
 
-// [核心修改] 保存状态时，包含撤销历史记录
 function saveCurrentTaskState() {
     if (!currentUserId || !currentTaskId) return;
 
@@ -203,10 +283,7 @@ function saveCurrentTaskState() {
         structure: parsedStructure,
         eventIndex: currentEventIndex, 
         logsHtml: document.getElementById('logArea').innerHTML, 
-        
-        // [关键修复] 将撤销历史也保存起来！
-        undoHistory: sectionUndoHistory, 
-        
+        undoHistory: sectionUndoHistory, // 核心：保存历史记录
         timestamp: Date.now()
     };
 
@@ -220,7 +297,6 @@ function saveCurrentTaskState() {
     }
 }
 
-// [核心修改] 加载状态时，恢复撤销历史记录
 function loadTaskState(id) {
     const json = localStorage.getItem(`draft_${currentUserId}_${id}`);
     if (!json) return; 
@@ -235,9 +311,7 @@ function loadTaskState(id) {
     parsedStructure = data.structure || [];
     fullMarkdownText = data.content || "";
     currentEventIndex = data.eventIndex || 0;
-    
-    // [关键修复] 恢复历史记录，如果没有则初始化为空对象
-    sectionUndoHistory = data.undoHistory || {}; 
+    sectionUndoHistory = data.undoHistory || {}; // 核心：恢复历史记录
 
     if (parsedStructure.length > 0) renderConfigArea();
     if (fullMarkdownText) {
@@ -253,7 +327,7 @@ function resetWorkspaceVariables() {
     currentEventIndex = 0;
     isPaused = false;
     currentRewritingTitle = null; 
-    sectionUndoHistory = {}; 
+    sectionUndoHistory = {}; // 切换任务时重置历史
     
     document.getElementById('paperTitle').value = "";
     document.getElementById('outlineRaw').value = "";
@@ -426,7 +500,7 @@ function finishTask(taskId) {
 // ============================================================
 
 function normalizeTitle(title) {
-    return title.replace(/\s+/g, '').replace(/AI重写|编辑|撤销|重写此节/g, '');
+    return title.replace(/\s+/g, '').replace(/AI重写|编辑|撤销|删除|重写此节/g, '');
 }
 
 // [核心] 增强渲染函数
@@ -461,7 +535,7 @@ window.renderEnrichedResult = function(mdText) {
             btnGroup.className = 'ms-3 opacity-0 hover-show-btns';
             btnGroup.style.transition = 'opacity 0.2s';
             
-            // 1. AI 重写按钮
+            // 1. AI 重写
             const btnRewrite = document.createElement('button');
             btnRewrite.className = 'btn btn-sm btn-outline-primary me-1';
             btnRewrite.innerHTML = '<i class="bi bi-magic"></i> AI重写';
@@ -472,7 +546,7 @@ window.renderEnrichedResult = function(mdText) {
                 openRewriteModalFromResult(titleText.trim());
             };
 
-            // 2. 人工编辑按钮
+            // 2. 编辑
             const btnEdit = document.createElement('button');
             btnEdit.className = 'btn btn-sm btn-outline-success me-1';
             btnEdit.innerHTML = '<i class="bi bi-pencil"></i> 编辑';
@@ -483,7 +557,7 @@ window.renderEnrichedResult = function(mdText) {
                 openManualEditModal(titleText.trim());
             };
 
-            // 3. 撤销/回退按钮
+            // 3. 撤销
             const btnUndo = document.createElement('button');
             btnUndo.className = 'btn btn-sm btn-outline-secondary me-1';
             btnUndo.innerHTML = '<i class="bi bi-arrow-counterclockwise"></i> 撤销';
@@ -494,7 +568,7 @@ window.renderEnrichedResult = function(mdText) {
                 performUndo(titleText.trim());
             };
 
-            // 4. [新增] 删除/清空按钮
+            // 4. [新增] 删除按钮
             const btnDelete = document.createElement('button');
             btnDelete.className = 'btn btn-sm btn-outline-danger';
             btnDelete.innerHTML = '<i class="bi bi-trash"></i> 删除';
@@ -508,7 +582,7 @@ window.renderEnrichedResult = function(mdText) {
             btnGroup.appendChild(btnRewrite);
             btnGroup.appendChild(btnEdit);
             btnGroup.appendChild(btnUndo);
-            btnGroup.appendChild(btnDelete); // 添加到按钮组
+            btnGroup.appendChild(btnDelete);
             header.appendChild(btnGroup);
 
             header.onmouseenter = () => btnGroup.style.opacity = '1';
@@ -614,28 +688,29 @@ window.saveManualEdit = function() {
 
 // --- 功能 C: 撤销/回退 ---
 window.performUndo = function(title) {
-    // 1. 检查历史记录是否存在
     if (!sectionUndoHistory[title]) {
         alert("此段落未进行过重写或修改，无历史版本可回退。");
         return;
     }
     
-    // 2. 确认提示
     if(!confirm(`确定要回退章节 [${title}] 到上一个版本吗？\n(注意：这将把当前内容和历史记录进行互换)`)) return;
     
-    // 3. 获取旧内容
     const prevContent = sectionUndoHistory[title];
     
-    // 4. 执行恢复 (replaceSectionContent 会自动把"当前内容"存入历史，实现 A<->B 互切)
     replaceSectionContent(title, prevContent);
-    
-    // [关键修复] 撤销动作发生后，必须立即保存状态到本地存储
     saveCurrentTaskState();
     
     appendLog(`↺ 已回退章节：[${title}]`, 'info');
 };
 
-// [核心] 正则替换 + 强制格式化 + [新增] 自动备份历史
+// --- 功能 D: 删除/清空 ---
+window.deleteSectionContent = function(title) {
+    if(!confirm(`⚠️ 确定要清空章节 [${title}] 的正文内容吗？\n\n(提示：标题将保留。删除前的内容会自动存入历史记录，您可以通过“撤销”按钮恢复。)`)) return;
+    replaceSectionContent(title, "");
+    appendLog(`🗑️ 已清空章节内容：[${title}]`, 'warn');
+};
+
+// [核心] 正则替换 + 强制格式化 + 自动备份历史
 window.replaceSectionContent = function(title, newContent) {
     const escapedTitle = escapeRegExp(title);
     
@@ -657,7 +732,6 @@ window.replaceSectionContent = function(title, newContent) {
     const match = fullMarkdownText.match(regex);
     
     if (match) {
-        // 备份历史记录
         const currentContent = match[2].trim(); 
         sectionUndoHistory[title] = currentContent;
 
@@ -680,7 +754,7 @@ window.replaceSectionContent = function(title, newContent) {
     }
 };
 
-// ... (其他辅助函数保持不变) ...
+// ... (辅助函数) ...
 window.lockUI = function(locked) {
     document.getElementById('btnSubmit').disabled = locked;
     const ctrlDiv = document.getElementById('controlButtons');
@@ -928,7 +1002,6 @@ window.renderConfigArea = function() {
                     <input type="number" class="form-control form-control-sm word-input" value="${child.words}" step="50" min="0" onchange="updateLeaf(${gIdx}, ${cIdx}, 'words', this.value)">
                     <span class="ms-1 small text-muted">字</span>
                 </div>
-                
                 <button class="btn btn-sm text-danger ms-2" onclick="deleteLeaf(${gIdx}, ${cIdx})" title="删除此写作点">
                     <i class="bi bi-trash3"></i>
                 </button>
@@ -938,7 +1011,7 @@ window.renderConfigArea = function() {
         container.appendChild(card);
     });
     document.getElementById('totalWords').innerText = globalTotal;
-}
+};
 
 function distributeChapterWords(gIdx) {
     const targetTotal = parseInt(document.getElementById(`chapter-total-${gIdx}`).value) || 0;
@@ -1022,13 +1095,3 @@ function openRewriteModal(gIdx, cIdx) {
     const modalInstance = bootstrap.Modal.getOrCreateInstance(modalEl);
     modalInstance.show();
 }
-
-window.deleteSectionContent = function(title) {
-    if(!confirm(`⚠️ 确定要清空章节 [${title}] 的正文内容吗？\n\n(提示：标题将保留。删除前的内容会自动存入历史记录，您可以通过“撤销”按钮恢复。)`)) return;
-    
-    // 利用 replaceSectionContent 将内容替换为空字符串
-    // 这会自动触发 saveCurrentTaskState 和 sectionUndoHistory 的备份逻辑
-    replaceSectionContent(title, "");
-    
-    appendLog(`🗑️ 已清空章节内容：[${title}]`, 'warn');
-};

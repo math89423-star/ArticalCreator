@@ -205,7 +205,7 @@ def extract_file_content(file_stream, filename) -> str:
     return content
 
 # 1. 后台工作线程函数 (现在负责所有重活)
-def background_worker(writer, task_id, title, chapters, references, text_custom_data, raw_files_data, check_status_func, initial_context, user_id):
+def background_worker(writer, task_id, title, chapters, ref_domestic, ref_foreign, text_custom_data, raw_files_data, check_status_func, initial_context, user_id):
     try:
         # 1. 在后台线程中进行文件解析 (耗时操作放在这里，不阻塞主线程)
         final_custom_data = text_custom_data
@@ -230,7 +230,7 @@ def background_worker(writer, task_id, title, chapters, references, text_custom_
 
         # 2. 执行生成器
         generator = writer.generate_stream(
-            task_id, title, chapters, references, final_custom_data, check_status_func, initial_context
+            task_id, title, chapters, ref_domestic, ref_foreign, final_custom_data, check_status_func, initial_context
         )
         
         # 3. 逐条消费
@@ -341,7 +341,8 @@ def generate_start():
     # 获取表单数据
     raw_chapters = request.form.get('chapter_data')
     title = request.form.get('title')
-    references = request.form.get('references')
+    ref_domestic = request.form.get('ref_domestic', '')
+    ref_foreign = request.form.get('ref_foreign', '')
     text_custom_data = request.form.get('custom_data', '')
     task_id = request.form.get('task_id')
     initial_context = request.form.get('initial_context', '')
@@ -369,7 +370,7 @@ def generate_start():
     # 启动后台线程
     t = threading.Thread(
         target=background_worker,
-        args=(writer, task_id, title, json.loads(raw_chapters), references, text_custom_data, raw_files_data, check_status_func, initial_context, user_id)
+        args=(writer, task_id, title, json.loads(raw_chapters), ref_domestic, ref_foreign, text_custom_data, raw_files_data, check_status_func, initial_context, user_id)
     )
     t.daemon = True 
     t.start()

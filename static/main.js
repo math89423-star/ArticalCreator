@@ -262,7 +262,11 @@ window.saveCurrentTaskState = function() {
     const draftData = {
         title: title,
         outline: document.getElementById('outlineRaw').value,
-        refs: document.getElementById('references').value,
+        // --- 修改开始 ---
+        refDomestic: document.getElementById('refDomestic').value, // 新增
+        refForeign: document.getElementById('refForeign').value,   // 新增
+        // refs: document.getElementById('references').value,      // 删除旧的
+        // --- 修改结束 ---
         customData: document.getElementById('customData').value,
         content: fullMarkdownText,
         structure: parsedStructure,
@@ -290,7 +294,8 @@ window.loadTaskState = function(id) {
     
     document.getElementById('paperTitle').value = data.title || "";
     document.getElementById('outlineRaw').value = data.outline || "";
-    document.getElementById('references').value = data.refs || "";
+    document.getElementById('refDomestic').value = data.refDomestic || data.refs || ""; // 兼容旧数据
+    document.getElementById('refForeign').value = data.refForeign || "";
     document.getElementById('customData').value = data.customData || "";
     
     parsedStructure = data.structure || [];
@@ -317,7 +322,8 @@ window.resetWorkspaceVariables = function() {
     
     document.getElementById('paperTitle').value = "";
     document.getElementById('outlineRaw').value = "";
-    document.getElementById('references').value = "";
+    document.getElementById('refDomestic').value = "";
+    document.getElementById('refForeign').value = "";
     document.getElementById('customData').value = "";
     document.getElementById('fileListDisplay').innerHTML = "";
     document.getElementById('chapterConfigArea').innerHTML = "<div class='text-center text-muted small py-4'>请先解析大纲...</div>";
@@ -389,8 +395,8 @@ if (paperForm) {
 
         const formData = new FormData();
         formData.append('title', taskMeta.title);
-        formData.append('references', document.getElementById('references').value);
-        formData.append('custom_data', document.getElementById('customData').value);
+        formData.append('ref_domestic', document.getElementById('refDomestic').value);
+        formData.append('ref_foreign', document.getElementById('refForeign').value);
         selectedFiles.forEach(file => { formData.append('data_files', file); });
         formData.append('chapter_data', JSON.stringify(flatTasks));
         formData.append('task_id', currentTaskId);

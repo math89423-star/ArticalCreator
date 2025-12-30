@@ -236,7 +236,7 @@ window.smartDistributeWords = async function() {
 
     try {
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 60000);
+        const timeoutId = setTimeout(() => controller.abort(), 200000);
         // 3. 请求后端 API
         const res = await authenticatedFetch('/api/smart_distribute', {
             method: 'POST',

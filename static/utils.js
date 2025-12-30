@@ -200,20 +200,104 @@ window.parseOutline = function() {
     smartDistributeWords();
 };
 
-window.smartDistributeWords = function() {
+// 保留原有的 LLM 智能分配逻辑
+window.smartDistributeWords = async function() {
     const totalTarget = parseInt(document.getElementById('globalTotalWords').value) || 5000;
-    let reserved = 0, activeLeaves = [];
+    
+    // 1. 收集所有需要分配字数的“末级章节” (Leaf Nodes)
+    let activeLeaves = [];
+    let leafTitles = [];
+    
+    // 遍历树结构收集叶子节点
     parsedStructure.forEach(group => {
         group.children.forEach(child => {
-            if (child.isParent) return; 
-            if (/摘要|Abstract/.test(child.text)) { child.words = 400; reserved += 400; }
-            else if (/参考文献|致谢/.test(child.text)) child.words = 0;
-            else activeLeaves.push(child);
+            if (child.isParent) return; // 跳过父节点
+            
+            // 排除参考文献和致谢，它们通常不计入正文生成字数，或者固定为0
+            if (/参考文献|致谢/.test(child.text)) {
+                child.words = 0;
+            } else {
+                activeLeaves.push(child);
+                leafTitles.push(child.text);
+            }
         });
     });
-    let avgWords = Math.max(200, Math.round(Math.floor(Math.max(0, totalTarget - reserved) / (activeLeaves.length || 1)) / 50) * 50);
-    activeLeaves.forEach(leaf => leaf.words = avgWords);
-    renderConfigArea();
+
+    if (leafTitles.length === 0) {
+        alert("没有检测到有效的写作章节，无法分配。");
+        return;
+    }
+
+    // 2. UI 变为加载状态
+    const btn = document.querySelector('button[onclick="smartDistributeWords()"]');
+    const originalText = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = `<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> 思考中...`;
+
+    try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 60000);
+        // 3. 请求后端 API
+        const res = await authenticatedFetch('/api/smart_distribute', {
+            method: 'POST',
+            body: JSON.stringify({
+                total_words: totalTarget,
+                leaf_titles: leafTitles
+            }),
+            signal: controller.signal
+        });
+        clearTimeout(timeoutId);
+
+        const data = await res.json();
+        if (data.status === 'success') {
+            const map = data.distribution;
+            
+            // 4. 应用分配结果
+            let assignedTotal = 0;
+            activeLeaves.forEach(leaf => {
+                // 尝试匹配配置对象
+                let config = map[leaf.text];
+                
+                // 模糊匹配逻辑
+                if (!config) {
+                    const key = Object.keys(map).find(k => k.includes(leaf.text) || leaf.text.includes(k));
+                    if (key) config = map[key];
+                }
+
+                if (config) {
+                    // [核心修改] 同时应用字数和数据开关
+                    leaf.words = parseInt(config.words);
+                    // 只有当 LLM 明确说需要数据时，才自动开启；否则保持默认或关闭
+                    if (typeof config.needs_data === 'boolean') {
+                        leaf.useData = config.needs_data;
+                    }
+                } else {
+                    // 保底逻辑
+                    leaf.words = Math.floor(totalTarget / activeLeaves.length);
+                }
+
+                assignedTotal += leaf.words;
+            });
+
+            appendLog(`✅ 智能规划完成 (字数: ${assignedTotal}, 数据策略已自动应用)`, 'info');
+            renderConfigArea(); // 刷新 UI，按钮颜色会变
+        }
+        else {
+            throw new Error(data.msg);
+        }
+
+    } catch (e) {
+        console.error(e);
+        alert("智能分配失败，将回退到平均分配。\n错误: " + e.message);
+        // 回退机制：平均分配
+        let avg = Math.floor(totalTarget / activeLeaves.length);
+        activeLeaves.forEach(leaf => leaf.words = avg);
+        renderConfigArea();
+    } finally {
+        // 5. 恢复按钮
+        btn.disabled = false;
+        btn.innerHTML = originalText;
+    }
 };
 
 window.renderConfigArea = function() {
@@ -237,7 +321,7 @@ window.renderConfigArea = function() {
                 <div class="d-flex align-items-center justify-content-center" style="width: 40%;">
                     <div class="input-group input-group-sm">
                         <span class="input-group-text bg-white text-muted">本章</span>
-                        <input type="number" class="form-control text-center" id="chapter-total-${gIdx}" value="${chapterTotalWords}" step="100" min="0">
+                        <input type="number" class="form-control text-center" id="chapter-total-${gIdx}" value="${chapterTotalWords}" step="1" min="0">
                         <button class="btn btn-outline-secondary" type="button" onclick="distributeChapterWords(${gIdx})"><i class="bi bi-arrow-down-up"></i> 分配</button>
                     </div>
                 </div>
@@ -275,7 +359,7 @@ window.renderConfigArea = function() {
                     </button>
                 </div>
                 <div class="word-input-group">
-                    <input type="number" class="form-control form-control-sm word-input" value="${child.words}" step="50" min="0" onchange="updateLeaf(${gIdx}, ${cIdx}, 'words', this.value)">
+                    <input type="number" class="form-control form-control-sm word-input" value="${child.words}" step="1" min="0" onchange="updateLeaf(${gIdx}, ${cIdx}, 'words', this.value)">
                     <span class="ms-1 small text-muted">字</span>
                 </div>
                 <button class="btn btn-sm text-danger ms-2" onclick="deleteLeaf(${gIdx}, ${cIdx})" title="删除此写作点">
@@ -289,31 +373,37 @@ window.renderConfigArea = function() {
     document.getElementById('totalWords').innerText = globalTotal;
 };
 
+// [修改] 章节手动分配：移除取整逻辑，改为精确分配
 window.distributeChapterWords = function(gIdx) {
     const targetTotal = parseInt(document.getElementById(`chapter-total-${gIdx}`).value) || 0;
     const group = parsedStructure[gIdx];
     const activeLeaves = group.children.filter(c => !c.isParent);
     if (activeLeaves.length === 0) return alert("该章节下没有可分配的小节");
     
-    let avg = Math.floor(targetTotal / activeLeaves.length);
-    if (targetTotal > 0) avg = Math.max(50, Math.round(avg / 50) * 50);
-    else avg = 0;
+    // 精确除法
+    let count = activeLeaves.length;
+    let avg = Math.floor(targetTotal / count);
+    let remainder = targetTotal % count;
     
-    activeLeaves.forEach(leaf => leaf.words = avg);
+    activeLeaves.forEach((leaf, index) => {
+        // 余数均匀分配给前几个小节
+        leaf.words = avg + (index < remainder ? 1 : 0);
+    });
+    
     renderConfigArea();
-};
+}
 
 window.updateLeaf = function(gIdx, cIdx, field, value) {
     if (field === 'words') value = parseInt(value) || 0;
     parsedStructure[gIdx].children[cIdx][field] = value;
-    if (field === 'words') renderConfigArea(); 
+    if (field === 'words') renderConfigArea(); // Update total words
     if (field === 'text') sortLeaves(gIdx);
-};
+}
 
 window.toggleLeafData = function(gIdx, cIdx) {
     parsedStructure[gIdx].children[cIdx].useData = !parsedStructure[gIdx].children[cIdx].useData;
     renderConfigArea();
-};
+}
 
 window.sortLeaves = function(gIdx) {
     const group = parsedStructure[gIdx];
@@ -329,7 +419,7 @@ window.sortLeaves = function(gIdx) {
     });
     group.children = [...parents, ...leaves];
     renderConfigArea();
-};
+}
 
 window.deleteLeaf = function(gIdx, cIdx) { 
     const targetTitle = parsedStructure[gIdx].children[cIdx].text || "该小节";
@@ -337,7 +427,7 @@ window.deleteLeaf = function(gIdx, cIdx) {
         parsedStructure[gIdx].children.splice(cIdx, 1); 
         renderConfigArea(); 
     }
-};
+}
 
 window.addLeaf = function(gIdx) {
     const title = prompt("请输入新小节标题");

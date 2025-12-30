@@ -449,6 +449,30 @@ def manage_keys():
         if new_key in VALID_KEYS: return jsonify({"status": "fail", "msg": "Exists"}), 400
         VALID_KEYS.add(new_key); save_keys(list(VALID_KEYS))
         return jsonify({"status": "success", "key": new_key})
+    
+@app.route('/api/smart_distribute', methods=['POST'])
+def smart_distribute():
+    if not check_auth(): return jsonify({"error": "Unauthorized"}), 401
+    
+    data = request.json
+    try:
+        total_words = int(data.get('total_words', 5000))
+        leaf_titles = data.get('leaf_titles', [])
+        
+        if not leaf_titles:
+            return jsonify({"status": "error", "msg": "大纲列表为空"}), 400
+
+        writer = PaperAutoWriter(API_KEY, BASE_URL, MODEL_NAME)
+        
+        # 调用刚刚修改过的 plan_word_count
+        distribution_map = writer.plan_word_count(total_words, leaf_titles)
+        
+        return jsonify({"status": "success", "distribution": distribution_map})
+        
+    except Exception as e:
+        print(f"Distribute API Error: {e}")
+        # 即使后端报错，也要返回 JSON，防止前端死等
+        return jsonify({"status": "error", "msg": f"服务器内部错误: {str(e)}"}), 500
 
 # ==============================================================================
 # 启动入口 (核心修改)

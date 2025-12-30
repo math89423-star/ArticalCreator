@@ -364,6 +364,45 @@ def get_academic_thesis_prompt(target_words: int, ref_content_list: List[str], c
 请开始写作。
 """
 
+def get_word_distribution_prompt(total_words: int, outline_text: str) -> str:
+    return f"""
+# 角色
+你是一位经验丰富的学术论文编辑。
+
+# 任务
+根据用户提供的论文大纲，进行两项规划：
+1. **字数分配**: 将总字数 **{total_words}字** 合理分配给各章节。
+2. **数据策略**: 判断该章节是否需要**真实数据支撑**（包括用户上传的数据或联网搜索的宏观数据）。
+
+# 规划原则
+1. **字数权重**:
+   - 核心章节 (实证/分析/设计) 占 60%-70%。
+   - 次要章节 (综述/理论) 占 20%-30%。
+   - 辅助章节 (摘要/结论) 占 10%-15%。
+   - **总字数约束**: 所有章节分配的字数加起来，必须**严格等于 {total_words}**。
+
+2. **数据策略 (needs_data 判定)**:
+   - **True (需要数据)**: 章节标题包含“现状”、“分析”、“实证”、“统计”、“调研”、“应用”、“对比”、“实验”、“结果”等词汇，或涉及具体行业背景描述。
+   - **False (纯理论)**: 章节标题为“绪论”、“定义”、“概念”、“理论基础”、“研究方法”、“文献综述”、“结论”、“致谢”。
+
+# 待规划大纲
+{outline_text}
+
+# 输出格式 (JSON Only)
+请直接输出一个 JSON 对象。
+Key 是章节的**完整标题**。
+Value 是一个对象，包含 `words` (整数) 和 `needs_data` (布尔值)。
+
+**严禁**包含 Markdown 标记，**严禁**废话。
+
+示例格式：
+{{
+    "1.1 研究背景": {{ "words": 400, "needs_data": true }},
+    "1.2 核心概念界定": {{ "words": 300, "needs_data": false }},
+    "3.1 市场现状分析": {{ "words": 800, "needs_data": true }}
+}}
+"""
+
 
 class PaperAutoWriter:
     def __init__(self, api_key: str, base_url: str, model: str):
@@ -461,8 +500,8 @@ class PaperAutoWriter:
 
     def _refine_content(self, raw_content: str, target: int, sec_title: str, sys_prompt: str, user_prompt: str) -> Generator[str, None, str]:
         """智能扩写/精简逻辑 (Yields logs, returns refined content)"""
-        current_len = len(re.sub(r'\s', '', raw_content))
-
+        content_no_code = re.sub(r'```[\s\S]*?```', '', raw_content)
+        current_len = len(re.sub(r'\s', '', content_no_code))
         if target < 300:
             return raw_content
         
@@ -494,7 +533,7 @@ class PaperAutoWriter:
                     print(f"扩写失败: {e}")
             
             # 精简逻辑
-            elif current_len > target * 2:
+            elif current_len > target * 2.5:
                 yield json.dumps({'type': 'log', 'msg': f'   - 字数优化: 正在精简内容 ({current_len}/{target})...'})
                 condense_prompt = (
                     f"当前字数({current_len})远超目标({target})。\n"
@@ -660,7 +699,95 @@ class PaperAutoWriter:
         """
         # 传递 original_content 给 prompt
         sys_prompt = get_rewrite_prompt(title, section_title, user_instruction, context[-800:], custom_data, original_content)
-        
         user_prompt = f"论文题目：{title}\n请修改章节：{section_title}\n用户的具体修改意见：{user_instruction}"
-        
         return self._call_llm(sys_prompt, user_prompt)
+    
+    def plan_word_count(self, total_words: int, outline_list: List[str]) -> Dict[str, Dict]:
+        """
+        [增强版] 利用 LLM 规划字数 + 数据策略，包含强力容错机制
+        """
+        outline_str = "\n".join(outline_list)
+        prompt = get_word_distribution_prompt(total_words, outline_str)
+        
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": "你是一个严格输出 JSON 的学术规划师。"},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.2,
+                stream=False,
+                response_format={"type": "json_object"}
+            )
+            content = response.choices[0].message.content.strip()
+            
+            # 1. 基础 JSON 清洗
+            if content.startswith("```"): 
+                content = re.sub(r'```json|```', '', content).strip()
+            
+            try:
+                raw_map = json.loads(content)
+            except json.JSONDecodeError:
+                print(f"JSON 解析失败，原始内容: {content}")
+                return {}
+
+            # ==========================================
+            # 2. 强力数据标准化 (清洗 LLM 的各种奇怪格式)
+            # ==========================================
+            standardized_map = {}
+            
+            for k, v in raw_map.items():
+                # 跳过 LLM 可能生成的汇总字段，如 "Total": 15000
+                if "total" in k.lower() or "总计" in k:
+                    continue
+                    
+                # 情况 A: 标准格式 { "words": 500, "needs_data": true }
+                if isinstance(v, dict):
+                    w = int(v.get('words', 0))
+                    d = v.get('needs_data', False)
+                    # 容错：LLM 有时会把 true 写成 "true" 字符串
+                    if isinstance(d, str): d = d.lower() == 'true'
+                    standardized_map[k] = {"words": w, "needs_data": d}
+                
+                # 情况 B: 简单格式 500 (LLM 偷懒只回了数字)
+                elif isinstance(v, (int, float)):
+                    standardized_map[k] = {"words": int(v), "needs_data": False}
+                
+                # 情况 C: 字符串数字 "500"
+                elif isinstance(v, str) and v.isdigit():
+                    standardized_map[k] = {"words": int(v), "needs_data": False}
+
+            # ==========================================
+            # 3. 归一化计算 (Normalization)
+            # ==========================================
+            
+            current_total = sum(item['words'] for item in standardized_map.values())
+            
+            # 防止除以零
+            if current_total == 0: return standardized_map
+
+            ratio = total_words / current_total
+            
+            final_map = {}
+            for k, v in standardized_map.items():
+                final_map[k] = {
+                    "words": int(v['words'] * ratio),
+                    "needs_data": v['needs_data']
+                }
+            
+            # 4. 修正误差
+            new_total = sum(item['words'] for item in final_map.values())
+            diff = total_words - new_total
+            
+            if diff != 0 and final_map:
+                # 补给字数最多的章节
+                max_key = max(final_map, key=lambda k: final_map[k]['words'])
+                final_map[max_key]['words'] += diff
+                
+            return final_map
+            
+        except Exception as e:
+            print(f"智能规划严重错误: {e}")
+            # 返回空字典，前端会触发 catch 逻辑回退到平均分配
+            return {}

@@ -17,6 +17,8 @@ let selectedFiles = [];
 let currentEventIndex = 0;
 // 章节撤销历史记录 { "章节标题": "旧的内容文本" }
 let sectionUndoHistory = {}; 
+// [新增] 当前正在进行的精简任务数量
+let activeRefineTasks = 0;
 
 marked.setOptions({
     breaks: true, 
@@ -136,7 +138,6 @@ window.createNewTask = function() {
     }, 100);
 };
 
-// [新增] 兼容 index.html 中的 createNewPaper 调用
 window.createNewPaper = function() {
     createNewTask();
 };
@@ -190,14 +191,11 @@ window.deleteTask = function(e, id) {
     }
 };
 
-// [核心修复] 补全缺失的 renderTaskListUI 函数
 window.renderTaskListUI = function() {
     const container = document.getElementById('taskListContainer');
     if (!container) return;
     
     container.innerHTML = '';
-    
-    // 按时间倒序排列
     const sortedTasks = [...taskList].sort((a, b) => b.timestamp - a.timestamp);
 
     if (sortedTasks.length === 0) {
@@ -208,7 +206,6 @@ window.renderTaskListUI = function() {
     sortedTasks.forEach(task => {
         const isActive = (task.id === currentTaskId);
         const item = document.createElement('div');
-        // 使用 style.css 中定义的类
         item.className = `task-item ${isActive ? 'active-task' : ''}`;
         
         let statusBadge = '';
@@ -233,23 +230,18 @@ window.renderTaskListUI = function() {
                 <small class="text-muted" style="font-size: 0.75rem">ID: ${task.id.slice(0,4)}</small>
             </div>
         `;
-        
         item.onclick = (e) => {
-            // 点击删除按钮时不切换
             if (e.target.closest('.task-delete-btn')) return;
             switchTask(task.id);
         };
-        
         container.appendChild(item);
     });
 };
 
-// [新增] 简单的历史记录弹窗逻辑
 window.showHistory = function() {
     const modalEl = document.getElementById('historyModal');
     const container = document.getElementById('historyList');
     container.innerHTML = '';
-    
     taskList.forEach(t => {
         const d = new Date(t.timestamp);
         container.innerHTML += `
@@ -262,7 +254,6 @@ window.showHistory = function() {
             </div>
         `;
     });
-    
     new bootstrap.Modal(modalEl).show();
 };
 
@@ -283,7 +274,7 @@ function saveCurrentTaskState() {
         structure: parsedStructure,
         eventIndex: currentEventIndex, 
         logsHtml: document.getElementById('logArea').innerHTML, 
-        undoHistory: sectionUndoHistory, // 核心：保存历史记录
+        undoHistory: sectionUndoHistory, 
         timestamp: Date.now()
     };
 
@@ -311,7 +302,7 @@ function loadTaskState(id) {
     parsedStructure = data.structure || [];
     fullMarkdownText = data.content || "";
     currentEventIndex = data.eventIndex || 0;
-    sectionUndoHistory = data.undoHistory || {}; // 核心：恢复历史记录
+    sectionUndoHistory = data.undoHistory || {}; 
 
     if (parsedStructure.length > 0) renderConfigArea();
     if (fullMarkdownText) {
@@ -327,7 +318,8 @@ function resetWorkspaceVariables() {
     currentEventIndex = 0;
     isPaused = false;
     currentRewritingTitle = null; 
-    sectionUndoHistory = {}; // 切换任务时重置历史
+    sectionUndoHistory = {}; 
+    activeRefineTasks = 0; // 重置任务计数
     
     document.getElementById('paperTitle').value = "";
     document.getElementById('outlineRaw').value = "";
@@ -349,37 +341,31 @@ if (paperForm) {
     paperForm.onsubmit = async (e) => {
         e.preventDefault();
         
-        // 1. [核心] 立即禁用按钮，防止连点
         const btnSubmit = document.getElementById('btnSubmit');
         if(btnSubmit.disabled) return; 
         
-        // 保存原始按钮文字，方便后续恢复
         const originalBtnText = btnSubmit.innerText;
         btnSubmit.disabled = true;
         btnSubmit.innerText = "⏳ 正在启动...";
 
-        // 2. 校验逻辑 (这里是容易出 Bug 的地方)
         if (!parsedStructure || parsedStructure.length === 0) {
             const rawOutline = document.getElementById('outlineRaw').value.trim();
             if (rawOutline) {
                 parseOutline();
                 if (!parsedStructure || parsedStructure.length === 0) {
                     alert("❌ 自动解析失败，请检查大纲格式！");
-                    // 【修复】校验失败时，必须恢复按钮状态，否则用户被死锁
                     btnSubmit.disabled = false;
                     btnSubmit.innerText = originalBtnText; 
                     return;
                 }
             } else {
                 alert("⚠️ 请先填写大纲！");
-                // 【修复】校验失败时，必须恢复按钮状态
                 btnSubmit.disabled = false;
                 btnSubmit.innerText = originalBtnText;
                 return;
             }
         }
 
-        // ... (中间的任务初始化逻辑保持不变) ...
         const taskMeta = taskList.find(t => t.id === currentTaskId);
         if (!taskMeta) { createNewTask(); return; } 
 
@@ -404,7 +390,6 @@ if (paperForm) {
             });
         });
 
-        // 锁定界面 (lockUI 内部也会禁用按钮，但为了双重保险，且上面已经手动禁用了)
         lockUI(true); 
         saveCurrentTaskState();
 
@@ -428,7 +413,6 @@ if (paperForm) {
             if (response.ok) {
                 appendLog("✅ 任务启动，建立连接...", 'info');
                 subscribeTask(currentTaskId);
-                // 注意：成功后通常保持 lockUI(true) 状态，直到生成完成或停止
             } else {
                 const errJson = await response.json();
                 throw new Error(errJson.msg || "服务器启动任务失败");
@@ -439,10 +423,9 @@ if (paperForm) {
             saveTaskListMeta();
             renderTaskListUI();
             
-            // 【修复】发生异常时，恢复界面和按钮
             lockUI(false);
             btnSubmit.disabled = false;
-            btnSubmit.innerText = "🚀 3. 开始生成"; // 或者使用 originalBtnText
+            btnSubmit.innerText = "🚀 3. 开始生成";
         }
     };
 }
@@ -523,7 +506,21 @@ function finishTask(taskId) {
 // ============================================================
 
 function normalizeTitle(title) {
-    return title.replace(/\s+/g, '').replace(/AI重写|编辑|撤销|删除|重写此节/g, '');
+    return title.replace(/\s+/g, '').replace(/AI重写|编辑|撤销|删除|精简|重写此节/g, '');
+}
+
+// [辅助] 在parsedStructure中查找某章节的配置信息（为了获取预设字数）
+function findChapterConfig(title) {
+    if (!parsedStructure || parsedStructure.length === 0) return null;
+    const cleanTitle = normalizeTitle(title);
+    
+    for (let group of parsedStructure) {
+        if (normalizeTitle(group.title) === cleanTitle) return group; // 匹配一级章节
+        for (let child of group.children) {
+            if (normalizeTitle(child.text) === cleanTitle) return child; // 匹配子章节
+        }
+    }
+    return null;
 }
 
 // [核心] 增强渲染函数
@@ -550,7 +547,7 @@ window.renderEnrichedResult = function(mdText) {
             loadingSpan.className = 'rewrite-loading-badge';
             loadingSpan.innerHTML = `
                 <span class="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true" style="width: 0.7em; height: 0.7em; border-width: 0.1em;"></span>
-                AI重写中...
+                AI处理中...
             `;
             header.appendChild(loadingSpan);
         } else {
@@ -591,7 +588,18 @@ window.renderEnrichedResult = function(mdText) {
                 performUndo(titleText.trim());
             };
 
-            // 4. [新增] 删除按钮
+            // 4. [新增] 精简按钮
+            const btnRefine = document.createElement('button');
+            btnRefine.className = 'btn btn-sm btn-outline-warning me-1';
+            btnRefine.innerHTML = '<i class="bi bi-scissors"></i> 精简';
+            btnRefine.style.fontSize = '0.75rem';
+            btnRefine.style.padding = '1px 6px';
+            btnRefine.onclick = (e) => {
+                e.stopPropagation();
+                refineSection(titleText.trim());
+            };
+
+            // 5. 删除按钮
             const btnDelete = document.createElement('button');
             btnDelete.className = 'btn btn-sm btn-outline-danger';
             btnDelete.innerHTML = '<i class="bi bi-trash"></i> 删除';
@@ -605,6 +613,7 @@ window.renderEnrichedResult = function(mdText) {
             btnGroup.appendChild(btnRewrite);
             btnGroup.appendChild(btnEdit);
             btnGroup.appendChild(btnUndo);
+            btnGroup.appendChild(btnRefine); // 插入精简按钮
             btnGroup.appendChild(btnDelete);
             header.appendChild(btnGroup);
 
@@ -620,15 +629,9 @@ window.extractSectionContent = function(title) {
     const match = fullMarkdownText.match(regex);
     
     if (match) {
-        // [核心修复] 不要使用 trim()，它会删掉段首的全角空格
-        // 我们只去掉开头和结尾的多余换行符，但保留段首缩进
         let content = match[2];
-        
-        // 去除开头空行，但保留缩进字符
         content = content.replace(/^\n+/, ''); 
-        // 去除结尾空行
         content = content.replace(/\s+$/, '');
-        
         return content;
     }
     return "";
@@ -700,15 +703,11 @@ window.openManualEditModal = function(sectionTitle) {
     
     if (!content) {
         if (!confirm(`未找到章节 [${sectionTitle}] 的正文内容，是否创建新内容？`)) return;
-        content = ""; // 新内容初始化为空
+        content = ""; 
     }
 
-    // [优化] 如果内容不为空，且第一行没有全角缩进，自动给它补上（仅在编辑器里补，用户可删）
-    // 这样用户一打开看到的就是规范的格式
     if (content && !content.startsWith('　　') && !content.startsWith('#') && !content.startsWith('```')) {
-        // 简单判断：如果不是标题或代码块，且没缩进，就补一个
         content = '　　' + content; 
-        // (注：这里可以选择是否强制补。为了尊重原文，暂不强制，让用户自己决定，或者只在 save 时强制)
     }
 
     document.getElementById('manualEditSectionTitle').value = sectionTitle;
@@ -723,14 +722,12 @@ window.saveManualEdit = function() {
     const title = document.getElementById('manualEditSectionTitle').value;
     const newContent = document.getElementById('manualEditContent').value;
 
-    // 1. 先关闭模态框 (这是关键，防止 renderEnrichedResult 被阻拦)
     const modalEl = document.getElementById('manualEditModal');
     const modalInstance = bootstrap.Modal.getInstance(modalEl);
     if (modalInstance) {
         modalInstance.hide();
     }
     
-    // 手动移除 .show 类和遮罩，确保状态立即复位 (防止 Bootstrap 动画延迟导致判定失误)
     modalEl.classList.remove('show');
     const backdrop = document.querySelector('.modal-backdrop');
     if(backdrop) backdrop.remove();
@@ -738,11 +735,7 @@ window.saveManualEdit = function() {
     document.body.style.overflow = '';
     document.body.style.paddingRight = '';
 
-    // 2. 再执行替换和渲染
-    // 此时模态框已关闭，renderEnrichedResult 不会被拦截
     replaceSectionContent(title, newContent);
-    
-    // 3. 记录日志和保存状态
     appendLog(`📝 人工修订章节 [${title}] 已保存`, 'info');
     saveCurrentTaskState();
 };
@@ -757,10 +750,8 @@ window.performUndo = function(title) {
     if(!confirm(`确定要回退章节 [${title}] 到上一个版本吗？\n(注意：这将把当前内容和历史记录进行互换)`)) return;
     
     const prevContent = sectionUndoHistory[title];
-    
     replaceSectionContent(title, prevContent);
     saveCurrentTaskState();
-    
     appendLog(`↺ 已回退章节：[${title}]`, 'info');
 };
 
@@ -771,30 +762,130 @@ window.deleteSectionContent = function(title) {
     appendLog(`🗑️ 已清空章节内容：[${title}]`, 'warn');
 };
 
+// --- 功能 E: 自动精简 (核心新增) ---
+window.refineSection = async function(title) {
+    // 1. 并发限制
+    if (activeRefineTasks >= 3) {
+        alert("⚠️ 当前已有 3 个精简任务在运行，请稍候再试。");
+        return;
+    }
+
+    // 2. 获取预设字数
+    const chapterConfig = findChapterConfig(title);
+    if (!chapterConfig) {
+        alert("❌ 无法在大纲中找到该章节的配置，无法获取目标字数。");
+        return;
+    }
+    const targetWords = parseInt(chapterConfig.words) || 500;
+
+    // 3. 获取当前内容及字数检测
+    const currentContent = extractSectionContent(title);
+    if (!currentContent) {
+        alert("该章节暂无内容，无需精简。");
+        return;
+    }
+    const currentLen = currentContent.replace(/\s/g, '').length;
+    
+    if (currentLen <= targetWords) {
+        alert(`ℹ️ 当前字数 (${currentLen}) 未超过目标字数 (${targetWords})，无需精简。`);
+        return;
+    }
+
+    if (!confirm(`即将对章节 [${title}] 进行精简。\n\n当前字数：${currentLen}\n目标字数：${targetWords}\n\n确定执行吗？`)) return;
+
+    // 4. 执行任务
+    activeRefineTasks++;
+    currentRewritingTitle = title; // 显示 Loading 状态
+    renderEnrichedResult(fullMarkdownText);
+    
+    appendLog(`✂️ 正在精简章节 [${title}] (${currentLen} -> ${targetWords}字)...`, 'warn');
+
+    try {
+        const formData = {
+            title: document.getElementById('paperTitle').value,
+            section_title: title,
+            // 构造精简专用的 prompt
+            instruction: `请将上述内容精简到 ${targetWords} 字左右。要求：保留核心论点和数据，删除冗余修饰，确保语句通顺。`,
+            context: fullMarkdownText.slice(0, 1500), 
+            custom_data: document.getElementById('customData').value,
+            original_content: currentContent
+        };
+
+        // 复用 rewrite_section 接口
+        const res = await authenticatedFetch('/rewrite_section', {
+            method: 'POST',
+            body: JSON.stringify(formData)
+        });
+        
+        const data = await res.json();
+        
+        if (data.status === 'success') {
+            const newContent = data.content;
+            currentRewritingTitle = null;
+            replaceSectionContent(title, newContent);
+            
+            const newLen = newContent.replace(/\s/g, '').length;
+            appendLog(`✅ 章节 [${title}] 精简完成！(当前: ${newLen}字)`, 'info');
+            saveCurrentTaskState(); 
+        } else {
+            throw new Error(data.msg);
+        }
+
+    } catch (e) {
+        currentRewritingTitle = null;
+        renderEnrichedResult(fullMarkdownText); 
+        alert("精简失败: " + e.message);
+        appendLog("❌ 精简失败", 'error');
+    } finally {
+        activeRefineTasks--; // 释放并发名额
+    }
+};
+
 // [核心] 正则替换 + 强制格式化 + 自动备份历史
 window.replaceSectionContent = function(title, newContent) {
-const escapedTitle = escapeRegExp(title);
+    const escapedTitle = escapeRegExp(title);
     
-    // 1. 预处理：只去尾部，保留头部缩进
-    let formattedText = newContent.trimEnd().replace(/\r\n/g, '\n');
-    formattedText = formattedText.replace(/\n\s*\n/g, '\n'); 
+    // 1. 预处理：按行分割
+    let lines = newContent.trimEnd().replace(/\r\n/g, '\n').split('\n');
+    let formattedLines = [];
+    
+    for (let i = 0; i < lines.length; i++) {
+        let line = lines[i].trimEnd();
+        
+        // 跳过纯空行（稍后重建时由 join 决定间距，或者根据逻辑插入）
+        if (!line) continue; 
 
-    // 2. 强制缩进处理 (如果您希望强制所有段落都缩进，保留这段)
-    // 这段代码会自动把 "段落" 变成 "　　段落"
-    formattedText = formattedText.split('\n').map(line => {
-        let l = line.trimEnd(); 
-        if (!l) return l; 
-        if (/^(\#|\||`|- |\* |> )/.test(l.trimStart())) return l;
+        // --- 缩进处理 ---
+        let processedLine = line;
+        // 只有非标题、非表格、非代码块、非引用的普通段落，才加缩进
+        if (!/^(\#|\||`|- |\* |> )/.test(line.trimStart())) {
+            if (line.startsWith('　　')) processedLine = line;
+            else if (line.startsWith('  ')) processedLine = line.replace(/^( +)/, m => '　'.repeat(Math.ceil(m.length/2)));
+            else processedLine = '　　' + line.trimStart();
+        } else {
+            // 如果是表格行，确保去掉可能存在的全角缩进，防止解析错误
+            if (line.trimStart().startsWith('|')) {
+                processedLine = line.trim();
+            }
+        }
+
+        // --- [关键修复] 表格分离检测 ---
+        // 如果上一行是表格(以|结尾或开头)，且当前行不是表格 -> 强制插入空行断开
+        if (formattedLines.length > 0) {
+            let lastLine = formattedLines[formattedLines.length - 1];
+            let isLastLineTable = lastLine.trim().startsWith('|');
+            let isCurrentLineTable = processedLine.trim().startsWith('|');
+            
+            if (isLastLineTable && !isCurrentLineTable) {
+                formattedLines.push(''); // 插入一个空字符串，join时会变成空行
+            }
+        }
         
-        // 如果已经是全角空格开头，保留原样
-        if (l.startsWith('　　')) return l;
-        
-        // 如果是普通空格开头，替换为全角
-        if (l.startsWith('  ')) return l.replace(/^( +)/, m => '　'.repeat(Math.ceil(m.length/2)));
-        
-        // [关键] 如果没有任何缩进，强制加上全角空格
-        return '　　' + l.trimStart();
-    }).join('\n');
+        formattedLines.push(processedLine);
+    }
+    
+    // 使用单换行连接，因为我们在需要的地方已经插入了空字符串（即双换行）
+    let formattedText = formattedLines.join('\n');
 
     const regex = new RegExp(`(#{1,6}\\s*${escapedTitle}\\s*\\n)([\\s\\S]*?)(?=\\n\\s*#{1,6}\\s|$)`, 'i');
     const match = fullMarkdownText.match(regex);
@@ -805,7 +896,8 @@ const escapedTitle = escapeRegExp(title);
 
         const oldSection = match[0];
         const header = match[1]; 
-        const replacement = `${header}${formattedText}\n\n`;
+        // 确保 header 和 content 之间也有空行
+        const replacement = `${header}\n${formattedText}\n\n`;
         
         fullMarkdownText = fullMarkdownText.replace(oldSection, replacement);
         
@@ -822,7 +914,7 @@ const escapedTitle = escapeRegExp(title);
     }
 };
 
-// ... (辅助函数) ...
+// ... (其他辅助函数) ...
 window.lockUI = function(locked) {
     document.getElementById('btnSubmit').disabled = locked;
     const ctrlDiv = document.getElementById('controlButtons');
@@ -1111,14 +1203,8 @@ function sortLeaves(gIdx) {
     const group = parsedStructure[gIdx];
     const leaves = group.children.filter(c => !c.isParent);
     const parents = group.children.filter(c => c.isParent);
-    
     leaves.sort((a, b) => {
-        // 更健壮的排序逻辑
-        const getVer = s => {
-            const match = s.match(/^(\d+(\.\d+)*)/);
-            if (!match) return [999]; // 没数字的排最后
-            return match[0].split('.').map(Number);
-        };
+        const getVer = s => (s.match(/^(\d+(\.\d+)*)/) || ['999'])[0].split('.').map(Number);
         const vA = getVer(a.text), vB = getVer(b.text);
         for(let i=0; i<Math.max(vA.length, vB.length); i++) {
             if ((vA[i]||0) !== (vB[i]||0)) return (vA[i]||0) - (vB[i]||0);
@@ -1131,7 +1217,6 @@ function sortLeaves(gIdx) {
 
 function deleteLeaf(gIdx, cIdx) { 
     const targetTitle = parsedStructure[gIdx].children[cIdx].text || "该小节";
-    
     if(confirm(`⚠️ 危险操作确认\n\n您确定要永久删除写作点：\n“${targetTitle}” 吗？\n\n删除后无法恢复，请确认。`)) {
         parsedStructure[gIdx].children.splice(cIdx, 1); 
         renderConfigArea(); 
@@ -1153,8 +1238,6 @@ let targetRewriteIndices = { g: -1, c: -1 };
 
 // 修改 openRewriteModal 支持从右侧结果区调用
 function openRewriteModal(gIdx, cIdx) {
-    // 兼容：如果传入的是 gIdx, cIdx，则为左侧配置区调用
-    // 如果没有内容，提示先生成
     if (!fullMarkdownText) {
         alert("请先生成论文内容后再使用重写功能！");
         return;

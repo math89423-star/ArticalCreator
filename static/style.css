@@ -283,3 +283,56 @@ h4:hover .hover-show-btns {
 .rewrite-inline-btn {
     display: none !important;
 }
+
+/* =========================================================
+   Academic Three-Line Table Styling (最终修复版)
+   替换 style.css 末尾的旧表格样式
+========================================================= */
+
+/* 主表格容器 */
+.markdown-body table {
+    width: auto !important;       /* 由内容决定宽度 */
+    min-width: 50%;               /* 最小宽度减小，防止小表格被过度拉伸 */
+    max-width: 95%;               /* 留出一点边距，不贴边 */
+    margin: 2.5rem auto !important; /* 上下间距加大到 2.5rem，确保视觉分离 */
+    
+    border-collapse: collapse;
+    border-top: 2px solid #000;    
+    border-bottom: 2px solid #000; 
+    
+    font-size: 0.9em;             
+    background-color: transparent;
+    display: table;               
+}
+
+/* 表头 */
+.markdown-body th {
+    border-bottom: 1px solid #000; 
+    border-top: none;
+    border-left: none;
+    border-right: none;
+    padding: 8px 12px;
+    font-weight: 600;
+    text-align: center;
+    white-space: nowrap;          
+}
+
+/* 表体 */
+.markdown-body td {
+    border: none;
+    padding: 6px 12px;
+    vertical-align: middle;
+    text-align: center;
+    line-height: 1.4;
+}
+
+/* 强制修正：表格后的第一个段落增加顶部间距 */
+.markdown-body table + p {
+    margin-top: 2em !important;
+    display: block; /* 确保它是块级元素 */
+}
+
+/* 移动端适配 */
+.markdown-body {
+    overflow-x: auto;
+}

@@ -252,6 +252,7 @@ def get_academic_thesis_prompt(target_words: int, ref_content_list: List[str], c
     word_count_strategy = f"""
 1.  **目标字数**: **{target_words} 字**。
 2.  **强制范围**: 输出内容必须严格控制在 **{min_words} ~ {max_words} 字**之间。
+
 """
     if is_en_abstract or is_cn_abstract:
         word_count_strategy = "字数遵循摘要标准。"
@@ -439,8 +440,6 @@ class PaperAutoWriter:
         facts_context = ""
         use_data_flag = chapter.get('use_data', False)
 
-        # 仅对非摘要、非结论章节，且【开关开启】时，才启用数据挂载
-        #                 ↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓
         if "摘要" not in sec_title and "结论" not in sec_title and use_data_flag:
             
             # 1. 挂载用户数据
@@ -495,7 +494,7 @@ class PaperAutoWriter:
                     print(f"扩写失败: {e}")
             
             # 精简逻辑
-            elif current_len > target * 1.6:
+            elif current_len > target * 2:
                 yield json.dumps({'type': 'log', 'msg': f'   - 字数优化: 正在精简内容 ({current_len}/{target})...'})
                 condense_prompt = (
                     f"当前字数({current_len})远超目标({target})。\n"

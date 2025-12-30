@@ -161,7 +161,7 @@ def get_academic_thesis_prompt(target_words: int, ref_content_list: List[str], c
 ### **引用规范 (零容忍规则)**
 1.  **禁止出现ID**: 正文中**绝对禁止**出现 "参考文献ID"、"文献1"、"Reference ID" 等字样。
 2.  **引用格式**: 必须从文献内容中提取**作者**和**年份**，格式为 `作者(年份)`。
-    -   *例*: "Zhang (2023) 提出了..." 或 "OpenAI (2024) 发布了..."
+    -   *引用示例*: "张三（2025）认为咖啡不好喝是因为不够甜[1]。"
     -   *如果找不到作者*: 使用 `《标题》(年份)`。
 3.  **禁止模糊**: 严禁使用 "某学者"、"有研究"、"该作品" 等指代不明的词，**必须指名道姓**。
 4.  **顺序与频次**: 
@@ -190,10 +190,10 @@ def get_academic_thesis_prompt(target_words: int, ref_content_list: List[str], c
     elif "述评" in current_chapter_title:
         section_rule = """
 **当前任务：撰写文献述评**
-**要求**: 
+**写作要求**: 
 1. **不引用**: 此部分不需要引用具体文献。
-2. **内容**: 总结前文文献的不足，指出本研究的切入点（借鉴什么，丰富什么）。
-3. **篇幅**: 一个段落，300字左右。
+2. **内容**: 总结前文文献的不足，需要对全部文献做出总结，归纳这些文献带来的启示，对本研究的影响，本研究能从文献中借鉴和学习到的内容，阐述研究的不足，以及需要丰富的内容等等。
+3. **字数与篇幅要求**: 只写一个段落，约300字左右。
 """
 
     # E. 研究内容
@@ -245,9 +245,17 @@ def get_academic_thesis_prompt(target_words: int, ref_content_list: List[str], c
     else:
         ref_instruction = "### **策略D: 引用策略**\n本章节无需强制引用列表中的文献，如需引用数据请使用真实知识。"
 
-    word_count_strategy = f"目标: **{target_words} 字**。请务必**一次性完成指定的字数保障不过多超出**，" 
+
+    # 允许的字数波动范围
+    min_words = int(target_words * 0.85)
+    max_words = int(target_words * 1.15)
+    word_count_strategy = f"""
+1.  **目标字数**: **{target_words} 字**。
+2.  **强制范围**: 输出内容必须严格控制在 **{min_words} ~ {max_words} 字**之间。
+"""
     if is_en_abstract or is_cn_abstract:
         word_count_strategy = "字数遵循摘要标准。"
+
 
     # ----------------- 策略F: Python 绘图 -----------------
     visuals_instruction = ""
@@ -487,7 +495,7 @@ class PaperAutoWriter:
                     print(f"扩写失败: {e}")
             
             # 精简逻辑
-            elif current_len > target * 2.5:
+            elif current_len > target * 1.6:
                 yield json.dumps({'type': 'log', 'msg': f'   - 字数优化: 正在精简内容 ({current_len}/{target})...'})
                 condense_prompt = (
                     f"当前字数({current_len})远超目标({target})。\n"
@@ -615,7 +623,7 @@ class PaperAutoWriter:
                 user_prompt = f"题目：{title}\n章节：{sec_title}\n要求：请直接输出摘要的正文内容，严禁输出“### 摘要”或“### Abstract”等标题。请严格按照“摘要正文 + 关键词”的格式输出。"
             else:
                 sys_prompt = get_academic_thesis_prompt(target, [r[1] for r in assigned_refs], sec_title, chapter_num, has_user_data)
-                user_prompt = f"题目：{title}\n章节：{sec_title}\n前文：{context[-600:]}\n字数：{target}\n{facts_context}"
+                user_prompt = f"题目：{title}\n章节：{sec_title}\n前文：{context[-600:]}\n【重要约束】目标字数：{target}\n{facts_context}"
 
             # 8. 调用 LLM
             raw_content = self._call_llm(sys_prompt, user_prompt)

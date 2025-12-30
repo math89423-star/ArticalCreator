@@ -349,20 +349,37 @@ if (paperForm) {
     paperForm.onsubmit = async (e) => {
         e.preventDefault();
         
+        // 1. [核心] 立即禁用按钮，防止连点
+        const btnSubmit = document.getElementById('btnSubmit');
+        if(btnSubmit.disabled) return; 
+        
+        // 保存原始按钮文字，方便后续恢复
+        const originalBtnText = btnSubmit.innerText;
+        btnSubmit.disabled = true;
+        btnSubmit.innerText = "⏳ 正在启动...";
+
+        // 2. 校验逻辑 (这里是容易出 Bug 的地方)
         if (!parsedStructure || parsedStructure.length === 0) {
             const rawOutline = document.getElementById('outlineRaw').value.trim();
             if (rawOutline) {
                 parseOutline();
                 if (!parsedStructure || parsedStructure.length === 0) {
                     alert("❌ 自动解析失败，请检查大纲格式！");
+                    // 【修复】校验失败时，必须恢复按钮状态，否则用户被死锁
+                    btnSubmit.disabled = false;
+                    btnSubmit.innerText = originalBtnText; 
                     return;
                 }
             } else {
                 alert("⚠️ 请先填写大纲！");
+                // 【修复】校验失败时，必须恢复按钮状态
+                btnSubmit.disabled = false;
+                btnSubmit.innerText = originalBtnText;
                 return;
             }
         }
 
+        // ... (中间的任务初始化逻辑保持不变) ...
         const taskMeta = taskList.find(t => t.id === currentTaskId);
         if (!taskMeta) { createNewTask(); return; } 
 
@@ -387,6 +404,7 @@ if (paperForm) {
             });
         });
 
+        // 锁定界面 (lockUI 内部也会禁用按钮，但为了双重保险，且上面已经手动禁用了)
         lockUI(true); 
         saveCurrentTaskState();
 
@@ -410,6 +428,7 @@ if (paperForm) {
             if (response.ok) {
                 appendLog("✅ 任务启动，建立连接...", 'info');
                 subscribeTask(currentTaskId);
+                // 注意：成功后通常保持 lockUI(true) 状态，直到生成完成或停止
             } else {
                 const errJson = await response.json();
                 throw new Error(errJson.msg || "服务器启动任务失败");
@@ -419,7 +438,11 @@ if (paperForm) {
             taskMeta.status = 'stopped';
             saveTaskListMeta();
             renderTaskListUI();
+            
+            // 【修复】发生异常时，恢复界面和按钮
             lockUI(false);
+            btnSubmit.disabled = false;
+            btnSubmit.innerText = "🚀 3. 开始生成"; // 或者使用 originalBtnText
         }
     };
 }
@@ -1088,8 +1111,14 @@ function sortLeaves(gIdx) {
     const group = parsedStructure[gIdx];
     const leaves = group.children.filter(c => !c.isParent);
     const parents = group.children.filter(c => c.isParent);
+    
     leaves.sort((a, b) => {
-        const getVer = s => (s.match(/^(\d+(\.\d+)*)/) || ['999'])[0].split('.').map(Number);
+        // 更健壮的排序逻辑
+        const getVer = s => {
+            const match = s.match(/^(\d+(\.\d+)*)/);
+            if (!match) return [999]; // 没数字的排最后
+            return match[0].split('.').map(Number);
+        };
         const vA = getVer(a.text), vB = getVer(b.text);
         for(let i=0; i<Math.max(vA.length, vB.length); i++) {
             if ((vA[i]||0) !== (vB[i]||0)) return (vA[i]||0) - (vB[i]||0);

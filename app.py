@@ -62,15 +62,26 @@ class TaskManager:
         self._lock = threading.RLock()
         # 结构: { user_id: { task_id: { 'status': 'running', ... } } }
         self._user_tasks = {} 
+        # [新增] 用于追踪正在运行的线程，以便取消
+        self._active_threads = {}
+
 
     def start_task(self, user_id, task_id):
         """初始化任务状态"""
         with self._lock:
-            # 1. 确保用户字典存在
+            # [核心修复] 如果该任务已在运行，先标记为 stopped，迫使旧线程退出
+            # 注意：这里只是软停止，依赖 background_worker 内部检查 check_status_func
+            if user_id in self._user_tasks and task_id in self._user_tasks[user_id]:
+                if self._user_tasks[user_id][task_id]['status'] == 'running':
+                    print(f"[System] ⚠️ 检测到任务 {task_id} 正在运行，正在强制重启...")
+                    self._user_tasks[user_id][task_id]['status'] = 'stopped'
+                    # 给旧线程一点时间退出（可选）
+                    time.sleep(0.5)
+
             if user_id not in self._user_tasks:
                 self._user_tasks[user_id] = {}
             
-            # 2. 初始化具体任务 (强制重置状态)
+            # 初始化
             self._user_tasks[user_id][task_id] = {
                 'status': 'running',
                 'events': [],      
@@ -224,6 +235,9 @@ def background_worker(writer, task_id, title, chapters, references, text_custom_
         
         # 3. 逐条消费
         for chunk in generator:
+            if check_status_func() == 'stopped':
+                print(f"[Worker] 线程检测到停止信号，正在退出: {task_id}")
+                return
             task_manager.append_event(user_id, task_id, chunk)
             # 极短暂休眠，释放GIL锁，让其他并发任务的SSE线程有机会呼吸
             time.sleep(0.005) 

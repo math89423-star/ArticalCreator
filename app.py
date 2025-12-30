@@ -5,18 +5,12 @@ import io
 import threading
 import time
 import re
-from collections import defaultdict
-
 import matplotlib
 # 设置后端为 Agg，确保在无显示器的服务器环境下也能运行
 matplotlib.use('Agg') 
-
-# [新增依赖库]
 import pandas as pd  # 处理 Excel/CSV
 import pypdf         # 处理 PDF
 import docx          # 处理 Word .docx
-
-# 引入 waitress (请确保 pip install waitress)
 from waitress import serve
 from flask import Flask, render_template, request, Response, stream_with_context, jsonify, send_file, session
 from utils.word import MarkdownToDocx

@@ -3,7 +3,6 @@ import json
 import time
 from typing import List, Dict, Generator
 from openai import OpenAI
-from typing import Dict, Generator
 from .reference import ReferenceManager
 from .word import TextCleaner
 
@@ -35,7 +34,6 @@ def get_rewrite_prompt(thesis_title: str, section_title: str, user_instruction: 
      - 如果前文是理论，本段应转向应用或实证。
      - **必须**使用恰当的学术过渡词（如“基于上述分析”、“具体而言”、“与此同时”）来确保文气贯通，避免突兀。
 """
-
     return f"""
 # 角色
 你是一位资深的学术论文评审与修改专家，擅长修正论文逻辑，确保论证严密、主题聚焦。

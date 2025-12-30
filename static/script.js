@@ -595,7 +595,19 @@ window.extractSectionContent = function(title) {
     const escapedTitle = escapeRegExp(title);
     const regex = new RegExp(`(#{1,6}\\s*${escapedTitle}\\s*\\n)([\\s\\S]*?)(?=\\n\\s*#{1,6}\\s|$)`, 'i');
     const match = fullMarkdownText.match(regex);
-    if (match) return match[2].trim();
+    
+    if (match) {
+        // [核心修复] 不要使用 trim()，它会删掉段首的全角空格
+        // 我们只去掉开头和结尾的多余换行符，但保留段首缩进
+        let content = match[2];
+        
+        // 去除开头空行，但保留缩进字符
+        content = content.replace(/^\n+/, ''); 
+        // 去除结尾空行
+        content = content.replace(/\s+$/, '');
+        
+        return content;
+    }
     return "";
 };
 
@@ -661,8 +673,20 @@ window.executeRewrite = async function() {
 
 // --- 功能 B: 人工编辑 ---
 window.openManualEditModal = function(sectionTitle) {
-    const content = extractSectionContent(sectionTitle);
-    if (!content && !confirm(`未找到章节 [${sectionTitle}] 的正文内容，是否创建新内容？`)) return;
+    let content = extractSectionContent(sectionTitle);
+    
+    if (!content) {
+        if (!confirm(`未找到章节 [${sectionTitle}] 的正文内容，是否创建新内容？`)) return;
+        content = ""; // 新内容初始化为空
+    }
+
+    // [优化] 如果内容不为空，且第一行没有全角缩进，自动给它补上（仅在编辑器里补，用户可删）
+    // 这样用户一打开看到的就是规范的格式
+    if (content && !content.startsWith('　　') && !content.startsWith('#') && !content.startsWith('```')) {
+        // 简单判断：如果不是标题或代码块，且没缩进，就补一个
+        content = '　　' + content; 
+        // (注：这里可以选择是否强制补。为了尊重原文，暂不强制，让用户自己决定，或者只在 save 时强制)
+    }
 
     document.getElementById('manualEditSectionTitle').value = sectionTitle;
     document.getElementById('manualEditContent').value = content;
@@ -676,12 +700,26 @@ window.saveManualEdit = function() {
     const title = document.getElementById('manualEditSectionTitle').value;
     const newContent = document.getElementById('manualEditContent').value;
 
-    replaceSectionContent(title, newContent);
-    
+    // 1. 先关闭模态框 (这是关键，防止 renderEnrichedResult 被阻拦)
     const modalEl = document.getElementById('manualEditModal');
     const modalInstance = bootstrap.Modal.getInstance(modalEl);
-    modalInstance.hide();
+    if (modalInstance) {
+        modalInstance.hide();
+    }
+    
+    // 手动移除 .show 类和遮罩，确保状态立即复位 (防止 Bootstrap 动画延迟导致判定失误)
+    modalEl.classList.remove('show');
+    const backdrop = document.querySelector('.modal-backdrop');
+    if(backdrop) backdrop.remove();
+    document.body.classList.remove('modal-open');
+    document.body.style.overflow = '';
+    document.body.style.paddingRight = '';
 
+    // 2. 再执行替换和渲染
+    // 此时模态框已关闭，renderEnrichedResult 不会被拦截
+    replaceSectionContent(title, newContent);
+    
+    // 3. 记录日志和保存状态
     appendLog(`📝 人工修订章节 [${title}] 已保存`, 'info');
     saveCurrentTaskState();
 };
@@ -712,19 +750,26 @@ window.deleteSectionContent = function(title) {
 
 // [核心] 正则替换 + 强制格式化 + 自动备份历史
 window.replaceSectionContent = function(title, newContent) {
-    const escapedTitle = escapeRegExp(title);
+const escapedTitle = escapeRegExp(title);
     
-    // 1. 预处理
+    // 1. 预处理：只去尾部，保留头部缩进
     let formattedText = newContent.trimEnd().replace(/\r\n/g, '\n');
-    formattedText = formattedText.replace(/\n\s*\n/g, '\n'); // 压缩空行
+    formattedText = formattedText.replace(/\n\s*\n/g, '\n'); 
 
-    // 2. 强制缩进处理
+    // 2. 强制缩进处理 (如果您希望强制所有段落都缩进，保留这段)
+    // 这段代码会自动把 "段落" 变成 "　　段落"
     formattedText = formattedText.split('\n').map(line => {
         let l = line.trimEnd(); 
         if (!l) return l; 
         if (/^(\#|\||`|- |\* |> )/.test(l.trimStart())) return l;
-        if (l.startsWith('  ')) return l.replace(/^( +)/, m => '　'.repeat(Math.ceil(m.length/2)));
+        
+        // 如果已经是全角空格开头，保留原样
         if (l.startsWith('　　')) return l;
+        
+        // 如果是普通空格开头，替换为全角
+        if (l.startsWith('  ')) return l.replace(/^( +)/, m => '　'.repeat(Math.ceil(m.length/2)));
+        
+        // [关键] 如果没有任何缩进，强制加上全角空格
         return '　　' + l.trimStart();
     }).join('\n');
 

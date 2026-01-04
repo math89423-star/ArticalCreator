@@ -2,7 +2,6 @@ import re
 import math
 from typing import List, Dict, Tuple
 
-
 class ReferenceManager:
     def __init__(self, raw_references: str):
         raw_lines = [r.strip() for r in raw_references.split('\n') if r.strip()]

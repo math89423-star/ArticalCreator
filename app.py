@@ -14,7 +14,7 @@ import docx          # 处理 Word .docx
 from waitress import serve
 from flask import Flask, render_template, request, Response, stream_with_context, jsonify, send_file, session
 from utils.word import MarkdownToDocx
-from utils.prompts import PaperAutoWriter
+from utils.paperautowriter import PaperAutoWriter
 
 app = Flask(__name__)
 app.secret_key = "super_secret_key_for_session" # 用于管理员登录Session
@@ -485,7 +485,7 @@ if __name__ == '__main__':
         save_keys(list(VALID_KEYS))
     
     print("🚀 服务器正在启动...")
-    print("⚠️  请访问 http://192.168.0.35:8001 (请根据实际IP访问)")
+    print("⚠️  请访问 http://223.109.143.195:8001 (请根据实际IP访问)")
     print("✅ 已启用 Waitress 高并发模式，支持多任务同时运行")
     
     # ✅ 使用 Waitress 启动，配置 10 个处理线程

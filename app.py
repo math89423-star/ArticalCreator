@@ -24,7 +24,7 @@ app.secret_key = "super_secret_key_for_session" # 用于管理员登录Session
 # ==============================================================================
 API_KEY = "sk-VuSl3xg7XTQUbWzs4QCeinJk70H4rhFUtrLdZlBC6hvjvs1t" 
 BASE_URL = "https://tb.api.mkeai.com/v1"
-MODEL_NAME = "deepseek-v3.2" 
+MODEL_NAME = "gemini-2.5-pro" 
 
 # 管理员账号配置
 ADMIN_USERNAME = "admin"

@@ -336,28 +336,48 @@ window.renderConfigArea = function() {
         
         const body = card.querySelector('.chapter-body');
         group.children.forEach((child, cIdx) => {
+            if (!child.chartType) child.chartType = 'none';
             const row = document.createElement('div');
             row.className = 'leaf-row';
             const indent = Math.max(0, (child.level - 2) * 20); 
             const dataBtnColor = child.useData ? 'btn-outline-success active' : 'btn-outline-secondary';
+            // --- 图表按钮状态逻辑 ---
+            let chartIcon, chartText, chartBtnClass;
+            if (child.chartType === 'table') {
+                chartIcon = 'bi-table';
+                chartText = '三线表';
+                chartBtnClass = 'btn-outline-primary active';
+            } else if (child.chartType === 'plot') {
+                chartIcon = 'bi-graph-up';
+                chartText = '统计图';
+                chartBtnClass = 'btn-outline-danger active'; // 用不同颜色区分
+            } else {
+                chartIcon = 'bi-slash-circle'; // 或者 bi-image
+                chartText = '无图表';
+                chartBtnClass = 'btn-outline-secondary'; // 灰色默认
+            }
             
             row.innerHTML = `
                 <div class="d-flex align-items-center flex-grow-1" style="padding-left: ${indent}px;">
                     ${child.level > 2 ? '<i class="bi bi-arrow-return-right text-muted me-2 small"></i>' : ''}
                     <input type="text" class="leaf-title-input" value="${child.text}" onchange="updateLeaf(${gIdx}, ${cIdx}, 'text', this.value)">
                 </div>
+                
                 <div class="me-2">
-                    <button type="button" class="btn btn-sm ${dataBtnColor}" onclick="toggleLeafData(${gIdx}, ${cIdx})" title="数据挂载开关" style="font-size: 0.75rem; padding: 2px 6px;">
+                    <button type="button" class="btn btn-sm ${dataBtnColor}" onclick="toggleLeafData(${gIdx}, ${cIdx})" title="是否包含具体数据" style="font-size: 0.75rem; padding: 2px 6px;">
                         <i class="bi bi-database${child.useData ? '-fill-check' : ''}"></i> 数据
                     </button>
                 </div>
+
                 <div class="me-2">
-                    <button type="button" class="btn btn-sm text-secondary btn-rewrite" 
-                            onclick="openRewriteModal(${gIdx}, ${cIdx})" 
-                            title="AI 重写本节" style="font-size: 0.75rem; padding: 2px 6px; border: 1px solid #dee2e6;">
-                        <i class="bi bi-magic"></i> 重写
+                    <button type="button" class="btn btn-sm ${chartBtnClass}" 
+                            onclick="toggleLeafChart(${gIdx}, ${cIdx})" 
+                            title="点击切换：无 -> 表格 -> 统计图" 
+                            style="font-size: 0.75rem; padding: 2px 6px; min-width: 70px;">
+                        <i class="bi ${chartIcon}"></i> ${chartText}
                     </button>
                 </div>
+
                 <div class="word-input-group">
                     <input type="number" class="form-control form-control-sm word-input" value="${child.words}" step="1" min="0" onchange="updateLeaf(${gIdx}, ${cIdx}, 'words', this.value)">
                     <span class="ms-1 small text-muted">字</span>
@@ -371,6 +391,25 @@ window.renderConfigArea = function() {
         container.appendChild(card);
     });
     document.getElementById('totalWords').innerText = globalTotal;
+};
+
+window.toggleLeafChart = function(gIdx, cIdx) {
+    const child = parsedStructure[gIdx].children[cIdx];
+    // 状态轮转: none -> table -> plot -> none
+    if (child.chartType === 'none' || !child.chartType) {
+        child.chartType = 'table';
+    } else if (child.chartType === 'table') {
+        child.chartType = 'plot';
+    } else {
+        child.chartType = 'none';
+    }
+    
+    // 如果开启了图表，建议自动开启“数据”开关，逻辑更顺畅（可选）
+    if (child.chartType !== 'none') {
+        child.useData = true;
+    }
+
+    renderConfigArea(); // 重新渲染以更新图标和颜色
 };
 
 // [修改] 章节手动分配：移除取整逻辑，改为精确分配

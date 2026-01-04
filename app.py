@@ -55,7 +55,7 @@ VALID_KEYS = set(load_keys())
 def is_valid_key(key):
     return key in VALID_KEYS
 
-# --- 任务管理器 (优化版) ---
+# 任务管理器
 class TaskManager:
     def __init__(self):
         # 使用 RLock 确保线程安全
@@ -474,10 +474,30 @@ def smart_distribute():
         print(f"Distribute API Error: {e}")
         # 即使后端报错，也要返回 JSON，防止前端死等
         return jsonify({"status": "error", "msg": f"服务器内部错误: {str(e)}"}), 500
+    
+@app.route('/api/parse_opening_report_text', methods=['POST'])
+def parse_opening_report_text():
+    if not check_auth(): return jsonify({"error": "Unauthorized"}), 401
+    
+    data = request.json
+    raw_text = data.get('text', '')
+    
+    if not raw_text or len(raw_text) < 10:
+        return jsonify({"status": "error", "msg": "内容过短，请粘贴完整的开题报告"}), 400
 
-# ==============================================================================
-# 启动入口 (核心修改)
-# ==============================================================================
+    try:
+        # 调用文本解析器
+        parsed_data = TextReportParser.parse(raw_text)
+        return jsonify({
+            "status": "success", 
+            "data": parsed_data
+        })
+    except Exception as e:
+        print(f"Text Parse Error: {e}")
+        return jsonify({"status": "error", "msg": str(e)}), 500
+
+
+
 if __name__ == '__main__':
     # 确保存储文件存在
     if not os.path.exists(KEYS_FILE):

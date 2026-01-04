@@ -92,7 +92,16 @@ def get_rewrite_prompt(thesis_title: str, section_title: str, user_instruction: 
 请开始重写，直接输出正文，注意格式排版。
 """
 
-def get_academic_thesis_prompt(target_words: int, ref_content_list: List[str], current_chapter_title: str, chapter_num: str, has_user_data: bool = False, full_outline: str = "") -> str:
+def get_academic_thesis_prompt(
+        target_words: int, 
+        ref_content_list: List[str], 
+        current_chapter_title: str, 
+        chapter_num: str, 
+        has_user_data: bool = False, 
+        full_outline: str = "",
+        opening_report_data: dict = None,
+        chart_type: str = 'none'
+        ) -> str:
     
     # ------------------------------------------------------------------
     # 1. 章节专属逻辑
@@ -102,7 +111,6 @@ def get_academic_thesis_prompt(target_words: int, ref_content_list: List[str], c
     is_en_abstract = "Abstract" in current_chapter_title and "摘要" not in current_chapter_title
 
     # 判断是否为需要图表的章节
-    # [修改点1] 逻辑升级：如果章节名包含特定词 OR 挂载了用户数据，则必须开启图表
     needs_charts = False
     keywords = ["实验", "测试", "分析", "结果", "数据", "设计", "实现", "验证", "Evaluation", "Analysis", "Design"]
     if (chapter_num and any(k in current_chapter_title for k in keywords)) or has_user_data:
@@ -156,7 +164,7 @@ def get_academic_thesis_prompt(target_words: int, ref_content_list: List[str], c
 2. **实践意义**: 具体到对**企业、政府或社会**的实际指导作用（如“降低了...成本”、“提升了...效率”、“为...决策提供了参考”）。
 """
 
-# C. 国内外研究现状
+    # C. 国内外研究现状
     elif any(k in current_chapter_title for k in ["国内研究现状", "国外研究现状", "文献综述", "Review", "Status", "文献述评", "Literature"]):
         if ref_content_list:
             first_ref = ref_content_list[0]
@@ -265,15 +273,11 @@ def get_academic_thesis_prompt(target_words: int, ref_content_list: List[str], c
 
 """
 
-    # ------------------------------------------------------------------
-    # 2. 引用指令
-    # ------------------------------------------------------------------
+    # 引用指令
     ref_instruction = ""
-    
     # 定义属于“综述/现状”的关键词
     review_keywords = ["国内研究现状", "国外研究现状", "文献综述", "Review", "Status", "文献述评", "Literature"]
     is_review_chapter = any(k in current_chapter_title for k in review_keywords)
-
     if ref_content_list and is_review_chapter:
         # 只有在综述章节，才强制要求引用
         ref_instruction = f"""
@@ -294,75 +298,107 @@ def get_academic_thesis_prompt(target_words: int, ref_content_list: List[str], c
 """
 
     # 允许的字数波动范围
-    min_words = int(target_words * 0.85)
-    max_words = int(target_words * 1.15)
+    min_words = int(target_words * 0.75)
+    max_words = int(target_words * 1.25)
     word_count_strategy = f"""
+### **策略E：字数控制**
 1. **目标字数**: **{target_words} 字**。
 2. **强制范围**: 输出内容必须控制在 **{min_words} ~ {max_words} 字**之间。
 """
-    
     if is_en_abstract or is_cn_abstract:
         word_count_strategy = "字数遵循摘要标准。"
-    # ----------------- 策略F: Python 绘图 -----------------
+
+    # 策略F: Python 绘图 
     visuals_instruction = ""
-    # 模拟数据真实性约束 (Source 108: 不能是整数，不能是2和5的倍数)
-    simulation_rule = """
-    - **模拟数据规范**: 若需模拟数据，**严禁**使用整数（如50%），**严禁**使用2和5的倍数。必须精确到小数点后两位（如 47.32%, 12.89），使其看起来像真实调研数据。符合现实逻辑（例如满意度不能全满分）。
+    plot_config = """
+    **Python代码要求**:
+        - 必须包含完整导入: `import matplotlib.pyplot as plt`, `import seaborn as sns`, `import pandas as pd`, `import numpy as np`。
+        - **中文支持(CRITICAL)**: 必须包含 `plt.rcParams['font.sans-serif'] = ['SimHei']` 和 `plt.rcParams['axes.unicode_minus'] = False`。
+        - **画布设置(CRITICAL)**: 必须在绘图前设置画布大小为横向长图：`plt.figure(figsize=(10, 6))`。严禁生成正方形图片。
+        - **数据定义**: 数据必须在代码内完整定义(DataFrame)，严禁读取外部文件。
+        - **风格**: 使用 `sns.set_theme(style="whitegrid")`。
+        - **输出**: 代码最后不需要 `plt.show()`。
+        - **图名**: 代码块下方必须输出 `**图{chapter_num}.X 图名**`。
+    """
+    # 基础配置：Markdown 表格设置 (用于 Table 模式)
+    table_config = """
+    - **表格要求**:
+        - 必须使用标准 Markdown 三线表格式。
+        - 数据必须精确，表头清晰。
+        - **表名**: 表格上方必须输出 `**表{chapter_num}.X 表名**`。
     """
 
-    # 动态图表指令：如果是用户数据，强制可视化
-    user_data_chart_instruction = ""
-    if has_user_data:
-        user_data_chart_instruction = """
-        -   **用户数据强制可视化 (Mandatory)**: 
-            -   检测到【用户提供的真实数据】。**必须**将该数据转化为可视化的**表格**或**Python统计图**。
-            -   **严禁**仅仅在正文中用文字罗列数字，必须配合图表展示。
-            -   如果是时间序列数据 -> 画折线图；如果是占比 -> 画饼图；如果是对比 -> 画柱状图。
-        -   **去重检查**: 严禁重复生成相同内容的图表。如果数据已画过，请使用“**如图X所示**”引用并分析。
-        -  **数据源拓展**: 
-                -   **优先**: 使用【用户提供的真实数据】。
-                -   **补充**: 如果用户数据不足以支撑当前论点（如维度不够、时间跨度不足），**立即使用【联网检索补充数据】**进行绘图，不要强行复用不相关的用户数据。
-        - **数据一致性**: 图表数据必须与正文完全一致。
-"""
-    if needs_charts:
+    # 逻辑分支
+    if chart_type == 'table':
         visuals_instruction = f"""
-### **策略F: 图表与数据可视化 (Python & Tables)**
-**本章节必须包含图表**。{user_data_chart_instruction}
-请按以下规范生成：
-**决策规则 (Decision Rules) - 严禁冗余**:
-1.  **二选一原则**: 针对同一组数据，**只能**选择“Markdown表格”**或者**“Python统计图”其中一种形式，**严禁**对同一数据既画图又制表。
-    -   **选表格**: 当数据需要展示精确数值、或者包含大量文字分类时。
-    -   **选画图**: 当数据侧重于展示**趋势**（折线图）、**对比**（柱状图）或**占比**（饼图）时。
+### **策略F: 强制表格展示 (Mandatory Table)**
+**用户明确要求本节必须包含一个【三线表】。**
+1.  **执行**: 请根据本节论述的数据（用户数据或联网数据），提炼核心指标，绘制一个 Markdown 表格。
+2.  **严禁画图**: 本节**禁止**生成 Python 代码绘图，只能用表格。
+{table_config}
+3.  **图文互动**: 正文中必须包含“如表{chapter_num}.X所示”的引用分析。
+"""
+    elif chart_type == 'plot':
+        visuals_instruction = f"""
+### **策略F: 强制统计图展示 (Mandatory Plot)**
+**用户明确要求本节必须包含一个【统计图】。**
+1.  **执行**: 请根据本节论述的数据，编写 Python 代码绘制最合适的统计图（折线/柱状/饼图）。
+2.  **严禁制表**: 本节**禁止**使用 Markdown 表格展示核心数据，必须转化成可视化图形。
+{plot_config}
+3.  **图文互动**: 正文中必须包含“如图{chapter_num}.X所示”的引用分析。
+"""
 
-2.  **表格**:
-    -   使用 Markdown 表格语法绘制三线表。
-    -   **表名**: 在表格**上方**，格式：`**表{chapter_num}.X 表名**`。
+    else:
+        # chart_type == 'none'
+        # 即使选了 none，如果用户上传了 custom_data (has_user_data=True)，通常还是建议可视化的
+        # 但为了尊重"手动控制"，如果用户明确选了"无图表"（前端逻辑可设），这里就强制不画
+        # 这里假设 'none' 是“未指定/默认”，我们保留之前的“按需自动判断”逻辑，或者严格执行“无图”
+        # 方案：如果是 'none'，则严格不画，除非 prompt 内部判定非常有必要（这里我们选择听用户的：None就是不画）
+        visuals_instruction = """
+### **策略F: 图表控制**
+**本章节无需生成图表或表格。** 请专注于文字论述。
+"""
 
-3.  **统计图 (Python Matplotlib) - 核心要求**:
-    -   请编写一段**标准、无错、可直接运行的 Python 代码**。
-    -   **代码块格式**: 使用 ` ```python ` 包裹。
-    -   **关键要求 (CRITICAL)**: 
-        -   **数据一致性 (最高优先级)**: 图表数据必须**严格来源于正文论述**。严禁正文说“增长20%”而图表显示“增长50%”。图表是正文数据的“镜像”，**绝对禁止**捏造与正文无关的数据集。
-        -   **统计图选型规范**: 必须根据数据逻辑选择最标准的统计图：
-            -   **趋势分析** (随时间变化) -> **折线图 (Line Chart)**
-            -   **不同项对比** (大小比较) -> **柱状图 (Bar Chart)**
-            -   **结构占比** (份额分析) -> **饼图 (Pie Chart)** 或 **环形图**
-            -   **相关性/分布** -> **散点图 (Scatter)** 或 **箱线图 (Boxplot)**
-            -   *严禁使用非统计学的“示意图”或无意义的图形。*
-        -   **库导入**: 必须在代码开头显式导入：`import matplotlib.pyplot as plt`, `import seaborn as sns`, `import pandas as pd`, `import numpy as np`。
-        -   **数据自包含**: 数据必须在代码内部完整定义（使用 DataFrame 或字典），**严禁**读取外部文件。
-        -   **格式规范**: 严禁使用全角空格（\\u3000）或不间断空格（NBSP），必须使用标准空格缩进。
-        -   **字体设置**: 必须包含 `plt.rcParams['font.sans-serif'] = ['SimHei']`,  `font = FontProperties(fname=r'C:\Windows\Fonts\simhei.ttf', size=12)`, `plt.rcParams['axes.unicode_minus'] = False`, 解决中文乱码，并且每个文本元素显式指定字体。
-        -   **美观性**: 使用 `sns.set_theme(style="whitegrid")`，配色需符合学术规范（如深蓝、深红、灰度），避免过于花哨。
-        -   **输出**: 最后**不需要** `plt.show()`。
-    -   **图名**: 在代码块**下方**，格式：`**图{chapter_num}.X 图名**`。
+    # 策略 I: 开题报告动态约束
+    report_rules_section = "" # 默认为空，即不显示该策略块
+    if opening_report_data and (opening_report_data.get("title") or opening_report_data.get("review") or opening_report_data.get("outline_content")):
+        # 只有当开题报告数据非空时，才构建约束指令
+        r_title = opening_report_data.get("title", "（未识别到具体题目）")
+        r_review = opening_report_data.get("review", "（无特定综述要求）")
+        r_outline = opening_report_data.get("outline_content", "（无特定提纲要求）")
+        
+        # 截断过长内容，防止 Token 溢出，同时保留核心信息
+        r_review_snippet = r_review[:2000] 
+        r_outline_snippet = r_outline[:1500]
 
-4.  **图文互动**: 
-    -   正文论述数据时，必须提及 “**如图{chapter_num}.X所示**” 或 “**如表{chapter_num}.X所示**”。
-    -   图表生成后，必须在正文中对图表反映的**趋势、拐点或异常值**进行简要分析，实现图文互证。
+        report_rules_section = f"""
+### **策略I: 开题报告一致性约束 (Opening Report Compliance)**
+**检测到用户上传了《开题报告》，本章节写作必须严格“戴着镣铐跳舞”，遵循以下约束：**
+
+1.  **核心论题锁定**: 
+    - 论文写作必须紧扣题目 **《{r_title}》**，严禁偏离该主题去写通用内容。
+
+2.  **文献综述/现状 (强制复用)**:
+    - **约束**: 若当前章节涉及“研究现状”或“文献综述”，**严禁**完全重新编造。
+    - **执行**: 必须以开题报告中的综述为**骨架**，进行扩写和学术化润色。
+    - **参考内容**:
+    ```text
+    {r_review_snippet}
+    ```
+
+3.  **研究路径/提纲 (路径依赖)**:
+    - **约束**: 你的写作必须符合开题报告预设的研究框架，不得随意更改研究方法或技术路线。
+    - **参考路径**:
+    ```text
+    {r_outline_snippet}
+    ```
 """
     else:
-        visuals_instruction = "### **策略F: 图表禁令**\n**严禁生成任何图表。**"
+        # 如果没有开题报告，可以选择不输出任何内容，或者输出一个宽松的提示
+        report_rules_section = """
+### **策略I: 开题报告约束**
+（未检测到用户上传开题报告，本策略不激活。请依据通用学术逻辑和全文大纲进行写作。）
+"""
 
     return f"""
 # 角色
@@ -389,13 +425,15 @@ def get_academic_thesis_prompt(target_words: int, ref_content_list: List[str], c
 ### **策略C: 章节专属逻辑**
 {section_rule}
 
+### **策略D：引用执行 (Citation)**
 {ref_instruction}
-
-{visuals_instruction}
 
 ### **策略E: 字数控制**
 {word_count_strategy}
 **扩写技巧**: 如果字数不足，请对核心概念进行定义扩展，或增加“举例说明”、“对比分析”、“理论支撑”等环节，**严禁**通过重复废话凑字数。
+
+### **策略F：图表与数据可视化 (Python & Tables)**
+{visuals_instruction}
 
 ### **策略G: 结构与边界控制 (CRITICAL - 绝对禁止项)**
 1.  **禁止自拟标题**: 输出内容**严禁包含**任何 Markdown 标题符号（#、##、###）。
@@ -408,8 +446,11 @@ def get_academic_thesis_prompt(target_words: int, ref_content_list: List[str], c
     -   **禁止**使用省略号(...)作为段落开头。直接开始论述即可。
 
 ### **策略H: 全局视野与定位 (Global Structure)**
-为了保证逻辑连贯，请参考以下的**全文大纲**，明确你当前的写作位置.
+为了保证逻辑连贯，请参考以下的**全文大纲**，明确你当前的写作位置。
 {full_outline}
+
+### **策略I：开题报告强制约束 (Opening Report Compliance)**
+{report_rules_section}
 
 请严格遵守以上策略及要求，并开始写作。
 """

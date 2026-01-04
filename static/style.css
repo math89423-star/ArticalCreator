@@ -290,40 +290,24 @@ h4:hover .hover-show-btns {
 ========================================================= */
 
 /* 主表格容器 */
+/* style.css */
 .markdown-body table {
-    width: auto !important;       /* 由内容决定宽度 */
-    min-width: 50%;               /* 最小宽度减小，防止小表格被过度拉伸 */
-    max-width: 95%;               /* 留出一点边距，不贴边 */
-    margin: 2.5rem auto !important; /* 上下间距加大到 2.5rem，确保视觉分离 */
-    
     border-collapse: collapse;
-    border-top: 2px solid #000;    
-    border-bottom: 2px solid #000; 
-    
-    font-size: 0.9em;             
-    background-color: transparent;
-    display: table;               
+    width: 90%;
+    margin: 20px auto;
+    border-top: 2px solid #000;
+    border-bottom: 2px solid #000;
 }
-
-/* 表头 */
 .markdown-body th {
-    border-bottom: 1px solid #000; 
-    border-top: none;
-    border-left: none;
-    border-right: none;
-    padding: 8px 12px;
-    font-weight: 600;
+    border-bottom: 1px solid #000;
+    font-weight: bold;
+    padding: 8px;
     text-align: center;
-    white-space: nowrap;          
 }
-
-/* 表体 */
 .markdown-body td {
-    border: none;
-    padding: 6px 12px;
-    vertical-align: middle;
+    padding: 6px;
+    border: none; /* 关键：去掉竖线和内部横线 */
     text-align: center;
-    line-height: 1.4;
 }
 
 /* 强制修正：表格后的第一个段落增加顶部间距 */
@@ -335,4 +319,24 @@ h4:hover .hover-show-btns {
 /* 移动端适配 */
 .markdown-body {
     overflow-x: auto;
+}
+
+.markdown-body img {
+    display: block;
+    margin: 20px auto;
+    max-width: 85% !important; /* 限制网页显示宽度 */
+    max-height: 500px !important; /* 限制高度 */
+    width: auto;
+    height: auto;
+    border: 1px solid #eee;
+    border-radius: 6px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+}
+
+/* 移动端适配 */
+@media (max-width: 768px) {
+    .markdown-body img {
+        max-width: 100% !important;
+        max-height: 350px !important;
+    }
 }

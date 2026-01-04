@@ -108,7 +108,23 @@
                             <textarea class="form-control" id="refForeign" rows="3" placeholder="Smith J. Digital Transformation..."></textarea>
                         </div>
                     </div>
-
+                    <div class="mb-3 p-3 bg-white rounded shadow-sm border">
+                        <label class="form-label fw-bold text-primary">
+                            <i class="bi bi-clipboard-data"></i> 粘贴开题报告
+                        </label>
+                        <div class="text-muted small mb-2">
+                            <i class="bi bi-info-circle"></i> 请直接从 Word/PDF 中<b>全选复制</b>开题报告的所有文字，粘贴到下方，然后点击解析。
+                        </div>
+                        
+                        <textarea class="form-control mb-2" id="openingReportPasteArea" rows="6" 
+                                placeholder="在此处粘贴开题报告全文（包含题目、综述、大纲、参考文献等）..."></textarea>
+                        
+                        <button class="btn btn-primary w-100" type="button" id="btnParseReportText">
+                            <i class="bi bi-magic"></i> 解析粘贴内容
+                        </button>
+                        
+                        <div id="reportParseStatus" class="mt-2 small text-secondary"></div>
+                    </div>
                     <div class="mb-3">
                         <label class="form-label fw-bold"><span class="step-badge">5</span>真实研究数据 (支持上传)</label>
                         <div class="card p-2 mb-2 bg-light" style="border: 2px dashed #dee2e6;">

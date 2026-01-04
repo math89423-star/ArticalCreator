@@ -24,9 +24,116 @@ window.sectionUndoHistory = {};
 window.activeRefineTasks = 0;
 
 marked.setOptions({
-    breaks: true, 
-    gfm: true
+    breaks: true,
+    gfm: true, // 必须开启，支持表格
+    headerIds: false,
+    mangle: false
 });
+
+const btnParseText = document.getElementById('btnParseReportText');
+if (btnParseText) {
+    btnParseText.addEventListener('click', async function() {
+        const textArea = document.getElementById('openingReportPasteArea');
+        const textVal = textArea.value.trim();
+        const statusDiv = document.getElementById('reportParseStatus');
+        const btn = document.getElementById('btnParseReportText');
+
+        if (!textVal) {
+            alert("请先粘贴开题报告内容！");
+            return;
+        }
+
+        // UI Loading
+        const originalBtnText = btn.innerHTML;
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> 解析中...';
+        statusDiv.innerText = "正在分析文本结构...";
+        statusDiv.className = "mt-2 small text-primary";
+
+        try {
+            const resp = await fetch('/api/parse_opening_report_text', {
+                method: 'POST',
+                headers: { 
+                    'Content-Type': 'application/json',
+                    'X-User-ID': window.currentUserId 
+                },
+                body: JSON.stringify({ text: textVal })
+            });
+            const res = await resp.json();
+
+            console.log("文本解析结果:", res);
+
+            if (res.status === 'success') {
+                window.openingReportData = res.data;
+                let filledItems = [];
+
+                // 1. 填入题目
+                const titleInput = document.getElementById('paperTitle');
+                if (titleInput && res.data.title) {
+                    titleInput.value = res.data.title;
+                    highlightInput(titleInput);
+                    filledItems.push("题目");
+                }
+
+                // 2. 填入大纲
+                const outlineInput = document.getElementById('outlineRaw');
+                if (outlineInput && res.data.outline_content) {
+                    // 简单的清洗：去除多余空行
+                    outlineInput.value = res.data.outline_content.replace(/\n{3,}/g, '\n\n').trim();
+                    highlightInput(outlineInput);
+                    filledItems.push("大纲");
+                }
+
+                // 3. 填入国内参考文献
+                const refDomInput = document.getElementById('refDomestic');
+                if (refDomInput && res.data.cn_refs && res.data.cn_refs.length > 0) {
+                    // 修改：直接 join，不再强加 [i+1] 序号，保留原文格式
+                    const text = res.data.cn_refs.join('\n'); 
+                    refDomInput.value = text;
+                    highlightInput(refDomInput);
+                    filledItems.push("国内文献");
+                }
+
+                // 4. 填入国外参考文献
+                const refForInput = document.getElementById('refForeign');
+                if (refForInput && res.data.en_refs && res.data.en_refs.length > 0) {
+                    // 修改：直接 join
+                    const text = res.data.en_refs.join('\n');
+                    refForInput.value = text;
+                    highlightInput(refForInput);
+                    filledItems.push("国外文献");
+                }
+
+                if (filledItems.length > 0) {
+                    statusDiv.innerHTML = `✅ 解析成功！已自动提取：<b>${filledItems.join(' + ')}</b>`;
+                    statusDiv.className = "mt-2 small text-success fw-bold";
+                } else {
+                    statusDiv.innerText = "⚠️ 解析完成，但未识别到关键信息。请检查粘贴内容是否包含“题目”、“文献综述”等关键词。";
+                    statusDiv.className = "mt-2 small text-warning";
+                }
+            } else {
+                throw new Error(res.msg || "未知错误");
+            }
+        } catch (e) {
+            console.error(e);
+            statusDiv.innerText = "解析错误: " + e.message;
+            statusDiv.className = "mt-2 small text-danger";
+        } finally {
+            btn.disabled = false;
+            btn.innerHTML = originalBtnText;
+        }
+    });
+}
+
+// 辅助高亮函数
+function highlightInput(element) {
+    element.style.transition = "background-color 0.3s";
+    const originalBg = element.style.backgroundColor;
+    element.style.backgroundColor = "#d4edda"; // 浅绿
+    setTimeout(() => {
+        element.style.backgroundColor = originalBg;
+    }, 1500);
+}
 
 // ============================================================
 // 1. Initialization & Auth
@@ -384,8 +491,13 @@ if (paperForm) {
             flatTasks.push({ title: group.title, is_parent: true, level: 1, words: 0 });
             group.children.forEach(child => {
                 flatTasks.push({ 
-                    title: child.text, is_parent: false, words: child.words || 0, 
-                    use_data: child.useData, level: child.level || 2 
+                    title: child.text, 
+                    is_parent: false, 
+                    words: child.words || 0, 
+                    use_data: child.useData, 
+                    level: child.level || 2,
+                    // [新增] 传递图表类型参数
+                    chart_type: child.chartType || 'none' 
                 });
             });
         });
@@ -501,15 +613,16 @@ window.finishTask = function(taskId) {
 // 6. 结果渲染与操作逻辑 (Action Logic)
 // ============================================================
 
-// [核心] 增强渲染函数
 window.renderEnrichedResult = function(mdText) {
     const container = document.getElementById('resultContent');
     const manualModal = document.getElementById('manualEditModal');
     if (manualModal && manualModal.classList.contains('show')) return; 
 
     const rawHtml = marked.parse(mdText);
-    container.innerHTML = rawHtml;
-
+    
+    // [修改点] 强制包裹一层 markdown-body div，确保三线表 CSS (.markdown-body table) 立即生效
+    container.innerHTML = `<div class="markdown-body">${rawHtml}</div>`;
+    // 下面的逻辑保持完全不变
     const headers = container.querySelectorAll('h1, h2, h3, h4');
     headers.forEach((header) => {
         let titleText = header.innerText; 

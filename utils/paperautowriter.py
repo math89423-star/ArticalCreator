@@ -2,12 +2,15 @@
 import re
 import json
 import time
+import base64
+import concurrent.futures
 from openai import OpenAI
-from typing import Dict, List, Generator
+from typing import Dict, List, Generator, Optional
 from .reference import ReferenceManager
 from .word import TextCleaner
 from .prompts import get_rewrite_prompt, get_word_distribution_prompt, get_academic_thesis_prompt
-import concurrent.futures
+from .word import MarkdownToDocx
+
 
 class PaperAutoWriter:
     def __init__(self, api_key: str, base_url: str, model: str):
@@ -16,10 +19,6 @@ class PaperAutoWriter:
         self.model = model
         # 主线程客户端
         self.main_client = OpenAI(api_key=api_key, base_url=base_url, timeout=120.0)
-
-    # --------------------------------------------------------------------------
-    # 辅助方法：Client 隔离调用
-    # --------------------------------------------------------------------------
     
     def _call_llm_with_client(self, client, system_prompt: str, user_prompt: str) -> str:
         """[基础方法] 使用指定的 client 实例调用 LLM"""
@@ -38,16 +37,12 @@ class PaperAutoWriter:
                 if attempt < max_retries - 1:
                     time.sleep(2)
                 else:
-                    raise e # 抛出异常让上层捕获
+                    raise e 
 
     def _call_llm(self, system_prompt: str, user_prompt: str) -> str:
         """[主线程] 调用方法"""
         return self._call_llm_with_client(self.main_client, system_prompt, user_prompt)
 
-    # --------------------------------------------------------------------------
-    # 联网搜索方法
-    # --------------------------------------------------------------------------
-    
     def _research_phase_with_client(self, client, topic: str) -> str:
         try:
             response = client.chat.completions.create(
@@ -64,10 +59,6 @@ class PaperAutoWriter:
 
     def _research_phase(self, topic: str) -> str:
         return self._research_phase_with_client(self.main_client, topic)
-
-    # --------------------------------------------------------------------------
-    # 状态检查
-    # --------------------------------------------------------------------------
 
     def _check_process_status(self, check_status_func) -> bool:
         while check_status_func() == "paused":
@@ -86,14 +77,11 @@ class PaperAutoWriter:
     def _clean_and_format(self, raw_content: str, sec_title: str, ref_manager) -> str:
         if "摘要" in sec_title or "Abstract" in sec_title:
             raw_content = re.sub(r'^#+\s*(摘要|Abstract)\s*', '', raw_content, flags=re.IGNORECASE).strip()
-        
         dirty_patterns = [r'[\(（]接上文[\)）]', r'[\(（]空两格[\)）]', r'^\.\.\.', r'接上文：']
         for p in dirty_patterns:
             raw_content = re.sub(p, '', raw_content)
-
         if ref_manager:
             raw_content = ref_manager.process_text_deterministic(raw_content)
-        
         processed = TextCleaner.convert_cn_numbers(raw_content)
         lines = []
         for line in processed.split('\n'):
@@ -108,26 +96,59 @@ class PaperAutoWriter:
         content_no_code = re.sub(r'```[\s\S]*?```', '', raw_content)
         current_len = len(re.sub(r'\s', '', content_no_code))
         if target < 300: return raw_content
-        
-        # 简化版精简逻辑，防止递归报错
         return raw_content
 
-    # --------------------------------------------------------------------------
-    # [核心修复] 单章节处理函数 (增加详细Debug Log)
-    # --------------------------------------------------------------------------
+    def _fix_markdown_table_format(self, text):
+        """
+        [V18.0] 强力修复表格格式
+        1. 识别表格行，强制去除缩进 (防止被当做代码块)
+        2. 确保表格与上方文本之间有空行 (Markdown 标准)
+        """
+        lines = text.split('\n')
+        new_lines = []
+        in_table = False
+        
+        for line in lines:
+            # 兼容全角空格的去除
+            stripped = line.strip().replace('\u3000', '')
+            
+            # 判定是否为表格行 (以 | 开头并结尾)
+            # 宽松匹配：只要去空后以 | 开头且包含第二个 | 即可
+            is_table_row = stripped.startswith('|') and stripped.count('|') >= 2
+            
+            if is_table_row:
+                if not in_table:
+                    # [进入表格] 
+                    # 检查上一行是否为空，如果不是，插入空行
+                    if new_lines and new_lines[-1].strip() != '':
+                        new_lines.append('') 
+                    in_table = True
+                
+                # 写入去缩进后的行
+                new_lines.append(stripped)
+            else:
+                if in_table:
+                    # [退出表格]
+                    # 插入空行
+                    if stripped != '':
+                        new_lines.append('')
+                    in_table = False
+                
+                # 非表格行保持原样 (保留原有的缩进)
+                new_lines.append(line)
+        return '\n'.join(new_lines)
     
     def _process_single_chapter(self, task_bundle):
-        """线程工作函数"""
+        """线程工作函数 (修复版)"""
         i = -1
         sec_title = "未知章节"
         logs = []
-        
         try:
             if len(task_bundle) < 12: 
                 return { "index": -1, "type": "error", "msg": f"参数不足: {len(task_bundle)}", "logs": [] }
 
             (api_key, base_url, model, task_id, title, chapter, 
-             ref_domestic, ref_foreign,  # <--- 这里接收分开的文献
+             ref_domestic, ref_foreign, 
              custom_data, context_summary, index_val, 
              full_outline_str) = task_bundle
             
@@ -135,9 +156,7 @@ class PaperAutoWriter:
             sec_title = chapter.get('title', '无标题')
             target = int(chapter.get('words', 500))
             is_parent = chapter.get('is_parent', False)
-
-            # Debug Print
-            # print(f"[Thread {i}] 处理章节: {sec_title} | 字数: {target}")
+            chart_type = chapter.get('chart_type', 'none') # [新增] 获取图表类型
 
             # 2. 标题处理 (父节点直接返回)
             header_prefix = self._determine_header_prefix(chapter, sec_title)
@@ -170,15 +189,12 @@ class PaperAutoWriter:
                 if facts:
                     facts_context += f"\n【联网补充数据】:\n{facts}\n"
 
-            # [修改] 5. 智能文献选择逻辑
+            # 5. 智能文献选择逻辑
             target_ref_list = []
-            
-            # 判断逻辑：根据标题关键词锁定文献库
             is_domestic_review = "国内" in sec_title and ("现状" in sec_title or "综述" in sec_title)
             is_foreign_review = "国外" in sec_title and ("现状" in sec_title or "综述" in sec_title)
             
             raw_ref_text = ""
-
             if is_domestic_review:
                 logs.append(f"   - 📚 锁定：国内参考文献")
                 raw_ref_text = ref_domestic
@@ -186,50 +202,100 @@ class PaperAutoWriter:
                 logs.append(f"   - 📚 锁定：国外参考文献")
                 raw_ref_text = ref_foreign
             else:
-                # 其他章节（如理论、正文），为了引用丰富度，合并两者
-                # 中间加换行符防止粘连
                 raw_ref_text = f"{ref_domestic}\n{ref_foreign}"
 
-            # 解析为列表 (取前8条，防止 Token 爆炸)
             if raw_ref_text:
                 target_ref_list = [line.strip() for line in raw_ref_text.split('\n') if line.strip()][:8]
 
             # 6. Prompt 构建
             sys_prompt = get_academic_thesis_prompt(
                 target, 
-                target_ref_list, # 传入筛选后的列表
+                target_ref_list, 
                 sec_title, 
                 chapter_num, 
                 has_user_data, 
-                full_outline=full_outline_str
+                full_outline=full_outline_str,
+                chart_type=chart_type # [新增] 传入图表类型
             )
             user_prompt = f"题目：{title}\n章节：{sec_title}\n前文摘要：{context_summary}\n【重要约束】目标字数：{target}字\n{facts_context}"
 
-            # 7. LLM 调用
-            raw_content = self._call_llm_with_client(local_client, sys_prompt, user_prompt)
+            # 7. LLM 调用 (初次生成)
+            content = self._call_llm_with_client(local_client, sys_prompt, user_prompt)
 
-            # 8. 简单字数检查与扩写 (省略详细逻辑，保持原有即可)
-            content_no_code = re.sub(r'```[\s\S]*?```', '', raw_content)
+            # 8. 字数检查与扩写
+            #    先去掉代码块算字数，避免被代码撑大
+            content_no_code = re.sub(r'```[\s\S]*?```', '', content)
             current_len = len(re.sub(r'\s', '', content_no_code))
+            
             if "摘要" not in sec_title and target > 300 and current_len < target * 0.5:
                  try:
-                    raw_content = self._call_llm_with_client(local_client, sys_prompt, user_prompt + "\n\n请大幅扩写，增加细节。")
-                 except: pass
+                    logs.append(f"   - ⚠️ 字数不足({current_len}/{target})，触发扩写...")
+                    # 扩写结果直接覆盖 content
+                    content = self._call_llm_with_client(local_client, sys_prompt, user_prompt + "\n\n请大幅扩写，增加细节，确保字数达标。")
+                 except Exception as e:
+                    print(f"扩写失败: {e}")
 
-            # 9. 清洗
-            # 这里的 ref_manager 传 None 即可，因为我们在 Prompt 里已经处理了引用格式
-            final_content = self._clean_and_format(raw_content, sec_title, None)
+            # =========================================================
+            # [新增] 后处理：将 Python 代码块转换为 Base64 图片
+            # (放在扩写之后，确保扩写生成的代码也能被转换)
+            # =========================================================
+            def replacer(match):
+                code = match.group(1)
+                img_buf = MarkdownToDocx.exec_python_plot(code)
+                if img_buf:
+                    b64_data = base64.b64encode(img_buf.getvalue()).decode('utf-8')
+                    return f"\n![统计图](data:image/png;base64,{b64_data})\n"
+                else:
+                    return match.group(0)
+
+            content = re.sub(r'```python\s+(.*?)```', replacer, content, flags=re.DOTALL)
+            content = self._clean_and_format(content, sec_title, None)
+            final_content = self._fix_markdown_table_format(content)
             section_md = f"{header_prefix} {sec_title}\n\n{final_content}\n\n"
-            
+
             return {
                 "index": i, "type": "content", 
                 "content": section_md, "raw_text": final_content, "logs": logs
             }
-
         except Exception as e:
             err_msg = f"❌ {sec_title} 异常: {str(e)}"
             print(f"[Thread {i}] ERROR: {err_msg}")
             return { "index": i, "type": "error", "msg": str(e), "logs": [err_msg] }
+        
+    def write_section_content(self, 
+                              section_title: str, 
+                              word_count: int, 
+                              references: List[str], 
+                              full_outline_str: str,
+                              chapter_num: str,
+                              has_data: bool = False,
+                              opening_report: Optional[Dict] = None) -> Generator[str, None, None]:
+        """
+        流式生成章节内容
+        :param opening_report: 解析后的开题报告字典 (title, review, outline_content)
+        """
+        
+        # 1. 策略 A: 直接内容复用 (Direct Hit)
+        # 如果当前章节是“文献综述”且开题报告里有大段综述，可以考虑直接返回
+        # 但为了保持文风统一，这里选择将开题报告作为 Context 传入 Prompt (Strategy I)，
+        # 让 LLM 进行润色和扩写，而不是生硬的 Copy-Paste。
+        
+        # 2. 构建系统提示词 (包含开题报告约束)
+        system_prompt = get_academic_thesis_prompt(
+            target_words=word_count,
+            ref_content_list=references,
+            current_chapter_title=section_title,
+            chapter_num=chapter_num,
+            has_user_data=has_data,
+            full_outline=full_outline_str,
+            opening_report_data=opening_report # <--- 传入开题报告数据
+        )
+
+        user_prompt = f"请撰写章节：【{section_title}】\n要求字数：约 {word_count} 字。"
+        
+        # 3. 流式调用
+        for chunk in self._call_llm_stream_with_client(self.main_client, system_prompt, user_prompt):
+            yield chunk
 
     # --------------------------------------------------------------------------
     # 并发生成器
@@ -246,9 +312,7 @@ class PaperAutoWriter:
         # 这里的 ref_manager 主要用于最后生成文末的参考文献列表，所以合并两者
         combined_refs = f"{ref_domestic}\n{ref_foreign}"
         ref_manager = ReferenceManager(combined_refs)
-        
         yield f"data: {json.dumps({'type': 'log', 'msg': '🚀 启动高并发生成引擎 (Max Threads=8)...'})}\n\n"
-        
         full_content = f"# {title}\n\n"
         global_context = initial_context if initial_context else f"论文题目：《{title}》"
         

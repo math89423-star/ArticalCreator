@@ -78,7 +78,7 @@ CURRENT_FONT_NAME = register_custom_font()
 class TextCleaner:
     @staticmethod
     def clean_special_chars(text):
-        text = text.replace('\u00A0', ' ').replace('\u200b', '')
+        text = text.replace('\u3000', '').replace('\u00A0', ' ').replace('\u200b', '')
         text = text.replace('\r\n', '\n').replace('\r', '\n')
         return text
     
@@ -229,20 +229,23 @@ class MarkdownToDocx:
         style.paragraph_format.space_before = Pt(0)
         style.paragraph_format.space_after = Pt(0)
         
+        # 1. 基础清洗 (移除全角空格)
         markdown_text = TextCleaner.clean_special_chars(markdown_text)
+        # 2. 标点修正
         markdown_text = TextCleaner.correct_punctuation(markdown_text)
         
         lines = markdown_text.split('\n')
         i = 0
         while i < len(lines):
-            line = lines[i].rstrip()
-            if not line.strip(): 
+            line = lines[i].strip() # 使用 strip() 去除首尾空白
+            if not line: 
                 i += 1
                 continue
             
-            if line.strip().startswith('#'):
-                level = len(line.strip().split(' ')[0])
-                content = line.strip().lstrip('#').strip()
+            # 标题
+            if line.startswith('#'):
+                level = len(line.split(' ')[0])
+                content = line.lstrip('#').strip()
                 content = re.sub(r'^[•\*\-\s]+', '', content)
                 doc_level = min(level, 3)
                 heading = doc.add_heading('', level=doc_level)
@@ -268,7 +271,7 @@ class MarkdownToDocx:
                 continue
             
             # Base64 图片
-            img_match = re.match(r'^!\[.*?\]\(data:image\/png;base64,(.*?)\)', line.strip())
+            img_match = re.match(r'^!\[.*?\]\(data:image\/png;base64,(.*?)\)', line)
             if img_match:
                 try:
                     base64_str = img_match.group(1)
@@ -283,8 +286,8 @@ class MarkdownToDocx:
                 i += 1
                 continue
 
-            # 代码块兜底
-            if line.strip().startswith('```python'):
+            # Python 代码块兜底
+            if line.startswith('```python'):
                 code_block = []
                 i += 1
                 while i < len(lines) and not lines[i].strip().startswith('```'):
@@ -300,7 +303,7 @@ class MarkdownToDocx:
                 continue
             
             # 表格处理
-            if line.strip().startswith('|'):
+            if line.startswith('|'):
                 table_data, next_i = MarkdownToDocx.parse_markdown_table(lines, i)
                 if table_data and len(table_data) > 1:
                     rows = len(table_data)
@@ -343,6 +346,10 @@ class MarkdownToDocx:
                     p.paragraph_format.space_after = Pt(6)
                 else:
                     p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+                    # [关键修改] 恢复 Word 原生首行缩进 (24pt ≈ 2字符)
+                    # 替代了之前的全角空格方案
+                    p.paragraph_format.first_line_indent = Pt(24) 
+                    
                     p.paragraph_format.line_spacing = 1.5
                     p.paragraph_format.space_after = Pt(0)
                     p.paragraph_format.space_before = Pt(0)

@@ -5,6 +5,32 @@ from typing import List
 def get_rewrite_prompt(thesis_title: str, section_title: str, user_instruction: str, context_summary: str, custom_data: str, original_content: str, chapter_num: str) -> str:
     # 1. 动态生成上下文指令
     context_logic_instruction = ""
+    trigger_keywords = ["绘图", "画图", "统计图", "图表", "重绘", "绘制", "三线表", "可视化", "plot", "chart", "数据图"]
+    should_trigger_vis = any(k in user_instruction for k in trigger_keywords)
+    visuals_section = ""
+    if should_trigger_vis:
+        # 只有检测到关键词，才注入详细的绘图规范
+        visuals_section = f"""
+6. **可视化响应（Visualization Strategy - ACTIVATED）**：
+    - **执行动作**：用户指令中包含绘图要求。请根据本节论述的数据，编写 Python 代码绘制最合适的统计图，或者绘制三线表。
+      (1)**Python代码要求**:
+        1.必须包含完整导入: `import matplotlib.pyplot as plt`, `import seaborn as sns`, `import pandas as pd`, `import numpy as np`。
+        2.**中文支持(CRITICAL)**: 必须包含 `plt.rcParams['font.sans-serif'] = ['SimHei']` 和 `plt.rcParams['axes.unicode_minus'] = False`。
+        3.**Seaborn规范(CRITICAL)**: 在使用 `sns.barplot` 或其他带 `palette` 参数的绘图函数时，**必须**将 `x` 轴变量赋值给 `hue` 参数，并设置 `legend=False`。
+        4.**画布设置(CRITICAL)**: 必须在绘图前设置画布大小为横向长图：`plt.figure(figsize=(10, 6))`。严禁生成正方形图片。
+        5.**数据定义**: 数据必须在代码内完整定义(DataFrame)，严禁读取外部文件。
+        6.**风格**: 使用 `sns.set_theme(style="whitegrid")`。
+        7.**输出**: 代码最后不需要 `plt.show()`。
+        8.**图名**: 代码块下方必须输出 `**图{chapter_num}.X 图名**`。
+       (2)**表格要求**:
+        1.必须使用标准 Markdown 三线表格式。
+        2.数据必须精确，表头清晰。
+        3.**表名**: 表格上方必须输出 `**表{chapter_num}.X 表名**`。
+    - **静默输出 (CRITICAL)**: 
+            1. **严禁**在代码块外部输出任何步骤标题！
+            2. **绝对禁止**出现以下文字：“设置绘图风格”、“定义数据”、“创建画布”、“绘制图形”、“添加标签”。
+            3. 你的输出格式必须是：[正文上一段] -> [Python代码块] -> [正文下一段]。
+"""
     
     # 如果前文很少（说明是开头部分），指令要强调“开篇”
     if not context_summary or len(context_summary) < 50:
@@ -76,29 +102,7 @@ def get_rewrite_prompt(thesis_title: str, section_title: str, user_instruction: 
     - 引号与书名号层级：引用层级：使用双引号 “” 作为第一层级引用；若引文中还包含引文，使用单引号 ‘’。特定对象标注：书籍、篇名、报纸、法律法规、文章题目：必须使用书名号 《》。
       示例：根据《民法典》规定；参见《自然》（Nature）杂志。
 
-6. **可视化响应（Visualization Strategy - CRITICAL）**：
-    - **启用条件**：当用户的修改指令中包含“**绘图**”、“**画图**”、“**统计图**”、“**图表**”、“**重绘**”、“**绘制三线表**”、“**三线表**”等要求时。
-    - **执行动作**：请根据本节论述的数据，编写 Python 代码绘制最合适的统计图（折线/柱状/饼图），或者绘制三线表。绘图制表严格遵守以下格式：
-      (1)**Python代码要求**:
-        1.必须包含完整导入: `import matplotlib.pyplot as plt`, `import seaborn as sns`, `import pandas as pd`, `import numpy as np`。
-        2.**中文支持(CRITICAL)**: 必须包含 `plt.rcParams['font.sans-serif'] = ['SimHei']` 和 `plt.rcParams['axes.unicode_minus'] = False`。
-        3.**Seaborn规范(CRITICAL)**: 在使用 `sns.barplot` 或其他带 `palette` 参数的绘图函数时，**必须**将 `x` 轴变量赋值给 `hue` 参数，并设置 `legend=False`。
-          - 错误示例: `sns.barplot(x='Year', y='Value', palette='viridis')`
-          - 正确示例: `sns.barplot(x='Year', y='Value', hue='Year', palette='viridis', legend=False)`
-        4.**画布设置(CRITICAL)**: 必须在绘图前设置画布大小为横向长图：`plt.figure(figsize=(10, 6))`。严禁生成正方形图片。
-        5.**数据定义**: 数据必须在代码内完整定义(DataFrame)，严禁读取外部文件。
-        6.**风格**: 使用 `sns.set_theme(style="whitegrid")`。
-        7.**输出**: 代码最后不需要 `plt.show()`。
-        8.**图名**: 代码块下方必须输出 `**图{chapter_num}.X 图名**`。
-       (2)**表格要求**:
-        1.必须使用标准 Markdown 三线表格式。
-        2.数据必须精确，表头清晰。
-        3.**表名**: 表格上方必须输出 `**表{chapter_num}.X 表名**`。
-    - **静默输出 (CRITICAL)**: 
-            1. **严禁**在代码块外部输出任何步骤标题！
-            2. **绝对禁止**出现以下文字：“设置绘图风格”、“定义数据”、“创建画布”、“绘制图形”、“添加标签”。
-            3. 你的输出格式必须是：[正文上一段] -> [Python代码块] -> [正文下一段]。
-
+{visuals_section}
 
 
 # 用户修改指令 (最高优先级 - 必须满足)

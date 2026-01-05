@@ -13,12 +13,9 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
 
-# =========================================================================
-# 字体加载辅助函数 (路径增强版)
-# =========================================================================
 def register_custom_font():
     """
-    [增强版] 自动查找并加载中文字体
+    自动查找并加载中文字体
     查找顺序：本地文件 -> Linux常见字体 -> Windows常见字体
     """
     # 1. 定义可能的本地路径 (相对路径 + 绝对路径)

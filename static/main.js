@@ -202,6 +202,48 @@ window.verifyAndLogin = async function(key, btn = null, msgSpan = null) {
     }
 };
 
+window.logout = function() {
+    if (!confirm("确定要退出登录吗？")) return;
+
+    // 1. 清除本地存储的凭证
+    localStorage.removeItem('paper_active_user');
+    
+    // 2. 重置全局状态
+    window.currentUserId = null;
+    window.taskList = [];
+    window.currentTaskId = null;
+    
+    // 3. 清空工作区数据
+    if (typeof resetWorkspaceVariables === 'function') {
+        resetWorkspaceVariables();
+    }
+    
+    // 4. 重置登录界面 UI
+    const loginOverlay = document.getElementById('loginOverlay');
+    const mainApp = document.getElementById('mainApp');
+    const loginBtn = document.getElementById('loginBtn');
+    const loginMsg = document.getElementById('loginMsg');
+    const userIdInput = document.getElementById('userIdInput');
+
+    if (loginOverlay) loginOverlay.style.display = 'flex';
+    if (mainApp) mainApp.style.filter = 'blur(5px)';
+    if (loginBtn) {
+        loginBtn.disabled = false;
+        loginBtn.innerText = "验证并登录";
+    }
+    if (loginMsg) {
+        loginMsg.innerText = "";
+        loginMsg.className = "";
+    }
+    if (userIdInput) userIdInput.value = "";
+
+    // 5. 停止可能的轮询 (如果有 AbortController)
+    if (window.abortController) {
+        window.abortController.abort();
+        window.abortController = null;
+    }
+};
+
 // ============================================================
 // 2. 任务管理器逻辑
 // ============================================================

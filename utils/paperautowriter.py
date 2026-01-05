@@ -379,9 +379,73 @@ class PaperAutoWriter:
     # --------------------------------------------------------------------------
 
     def rewrite_chapter(self, title: str, section_title: str, user_instruction: str, context: str, custom_data: str, original_content: str = "") -> str:
-        sys_prompt = get_rewrite_prompt(title, section_title, user_instruction, context[-800:], custom_data, original_content)
-        user_prompt = f"论文题目：{title}\n请修改章节：{section_title}\n用户的具体修改意见：{user_instruction}"
-        return self._call_llm(sys_prompt, user_prompt)
+        chapter_num = self._extract_chapter_num(section_title)
+        
+        sys_prompt = get_rewrite_prompt(title, section_title, user_instruction, context[-800:], custom_data, original_content, chapter_num)
+        
+        user_prompt = f"论文题目：{title}\n请修改章节：{section_title}\n用户的具体修改意见：{user_instruction}\n【最高指令】直接输出正文。如果需要绘图，请输出完整的 Markdown 代码块 (```python ... ```)，不要解释代码。"
+        
+        content = self._call_llm(sys_prompt, user_prompt)
+
+        # =========================================================
+        # [Step 1] 清洗废话标题 (保持不变，但更小心)
+        # =========================================================
+        garbage_patterns = [
+            r'^\s*(?:#+|\*\*|)?\s*(?:设置|定义|创建|绘制|添加|导入|准备)(?:绘图)?(?:风格|数据|变量|画布|条形图|折线图|饼图|统计图|图表|数值|标签|引用|相关库|代码).*?$',
+            r'^\s*(?:#+|\*\*|)?\s*Python\s*代码(?:如下|示例)?[:：]?\s*$',
+            r'^\s*(?:#+|\*\*|)?\s*代码如下[:：]?\s*$'
+        ]
+        for pat in garbage_patterns:
+            content = re.sub(pat, '', content, flags=re.MULTILINE | re.IGNORECASE)
+
+        # =========================================================
+        # [Step 2] 核心修复：更健壮的代码块提取与替换
+        # =========================================================
+        
+        # 定义一个专门用来找 python 代码块的正则
+        # (```python\s+[\s\S]*?```) : 匹配完整的代码块
+        code_block_pattern = re.compile(r'(```python\s+[\s\S]*?```)', re.IGNORECASE)
+        
+        def image_replacer(match):
+            full_block = match.group(1) # 完整的 ```python ... ``` 字符串
+            
+            # 提取内部代码：去掉首尾的 ```python 和 ```
+            # 使用 split 而不是正则，防止误伤内部内容
+            lines = full_block.strip().split('\n')
+            if len(lines) < 2: return "" # 空块
+            
+            # 去掉第一行 (```python) 和最后一行 (```)
+            code_lines = lines[1:-1]
+            code = '\n'.join(code_lines).strip()
+            
+            if not code: return ""
+
+            try:
+                img_buf = MarkdownToDocx.exec_python_plot(code)
+                if img_buf:
+                    b64_data = base64.b64encode(img_buf.getvalue()).decode('utf-8')
+                    # 返回图片 HTML
+                    return f'\n\n<div align="center" class="plot-container"><img src="data:image/png;base64,{b64_data}" style="max-width:85%; border:1px solid #eee; padding:5px; border-radius:4px;"></div>\n\n'
+                else:
+                    # 如果执行失败，我们选择【保留原代码块】，方便调试，
+                    # 或者返回空字符串隐藏错误。这里选择返回空字符串，避免乱码。
+                    return "" 
+            except Exception as e:
+                print(f"Plot Logic Error: {e}")
+                return ""
+
+        # 执行替换
+        # 注意：这里使用 re.sub，它会自动处理所有匹配到的块
+        new_content = code_block_pattern.sub(image_replacer, content)
+        
+        # [Step 3] 兜底检查：如果替换后还有残留的 ```，说明格式坏了
+        # 我们可以尝试强行移除所有残留的 ```python 和 ```
+        # 但通常 Step 2 处理完后，new_content 里应该已经没有代码块了
+        
+        # [Step 4] 清理多余空行
+        new_content = re.sub(r'\n{3,}', '\n\n', new_content)
+
+        return new_content.strip()
     
     def plan_word_count(self, total_words: int, outline_list: List[str]) -> Dict[str, Dict]:
         outline_str = "\n".join(outline_list)

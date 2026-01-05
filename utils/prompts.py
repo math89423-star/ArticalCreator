@@ -2,7 +2,7 @@
 from typing import List
 
 
-def get_rewrite_prompt(thesis_title: str, section_title: str, user_instruction: str, context_summary: str, custom_data: str, original_content: str) -> str:
+def get_rewrite_prompt(thesis_title: str, section_title: str, user_instruction: str, context_summary: str, custom_data: str, original_content: str, chapter_num: str) -> str:
     # 1. 动态生成上下文指令
     context_logic_instruction = ""
     
@@ -23,7 +23,7 @@ def get_rewrite_prompt(thesis_title: str, section_title: str, user_instruction: 
     else:
         context_logic_instruction = f"""
    - **位置判断**: 当前为**论文中间章节**。
-   - **前文摘要**: "...{context_summary[-500:]}..."
+   - **前文摘要**: "...{context_summary[-1500:]}..."
    - **写作逻辑**: 必须**紧密承接**上述前文的逻辑流。
      - 如果前文在分析问题，本段应继续深入或转向对策；
      - 如果前文是理论，本段应转向应用或实证。
@@ -61,7 +61,7 @@ def get_rewrite_prompt(thesis_title: str, section_title: str, user_instruction: 
      - 如果原文非常简陋，请进行**扩写和深化**。
 
 5. **学术规范与排版标准化 (Academic Formatting Standards)**：
-你必须严格遵守以下中文学术出版排版规范，确保输出内容无需二次清洗即可使用：
+    你必须严格遵守以下中文学术出版排版规范，确保输出内容无需二次清洗即可使用：
     - 标点符号的全角/半角区分：中文语境：正文中必须严格使用全角标点（如：，。；：？！（）“”《》）。
     (1)错误示例：我们发现,实验数据有误.
     (2)正确示例：我们发现，实验数据有误。
@@ -76,6 +76,30 @@ def get_rewrite_prompt(thesis_title: str, section_title: str, user_instruction: 
     - 引号与书名号层级：引用层级：使用双引号 “” 作为第一层级引用；若引文中还包含引文，使用单引号 ‘’。特定对象标注：书籍、篇名、报纸、法律法规、文章题目：必须使用书名号 《》。
       示例：根据《民法典》规定；参见《自然》（Nature）杂志。
 
+6. **可视化响应（Visualization Strategy - CRITICAL）**：
+    - **启用条件**：当用户的修改指令中包含“**绘图**”、“**画图**”、“**统计图**”、“**图表**”、“**重绘**”、“**绘制三线表**”、“**三线表**”等要求时。
+    - **执行动作**：请根据本节论述的数据，编写 Python 代码绘制最合适的统计图（折线/柱状/饼图），或者绘制三线表。绘图制表严格遵守以下格式：
+      (1)**Python代码要求**:
+        1.必须包含完整导入: `import matplotlib.pyplot as plt`, `import seaborn as sns`, `import pandas as pd`, `import numpy as np`。
+        2.**中文支持(CRITICAL)**: 必须包含 `plt.rcParams['font.sans-serif'] = ['SimHei']` 和 `plt.rcParams['axes.unicode_minus'] = False`。
+        3.**Seaborn规范(CRITICAL)**: 在使用 `sns.barplot` 或其他带 `palette` 参数的绘图函数时，**必须**将 `x` 轴变量赋值给 `hue` 参数，并设置 `legend=False`。
+          - 错误示例: `sns.barplot(x='Year', y='Value', palette='viridis')`
+          - 正确示例: `sns.barplot(x='Year', y='Value', hue='Year', palette='viridis', legend=False)`
+        4.**画布设置(CRITICAL)**: 必须在绘图前设置画布大小为横向长图：`plt.figure(figsize=(10, 6))`。严禁生成正方形图片。
+        5.**数据定义**: 数据必须在代码内完整定义(DataFrame)，严禁读取外部文件。
+        6.**风格**: 使用 `sns.set_theme(style="whitegrid")`。
+        7.**输出**: 代码最后不需要 `plt.show()`。
+        8.**图名**: 代码块下方必须输出 `**图{chapter_num}.X 图名**`。
+       (2)**表格要求**:
+        1.必须使用标准 Markdown 三线表格式。
+        2.数据必须精确，表头清晰。
+        3.**表名**: 表格上方必须输出 `**表{chapter_num}.X 表名**`。
+    - **静默输出 (CRITICAL)**: 
+            1. **严禁**在代码块外部输出任何步骤标题！
+            2. **绝对禁止**出现以下文字：“设置绘图风格”、“定义数据”、“创建画布”、“绘制图形”、“添加标签”。
+            3. 你的输出格式必须是：[正文上一段] -> [Python代码块] -> [正文下一段]。
+
+
 
 # 用户修改指令 (最高优先级 - 必须满足)
 {user_instruction}
@@ -86,7 +110,7 @@ def get_rewrite_prompt(thesis_title: str, section_title: str, user_instruction: 
    - **段间距**: 段落之间使用**单换行** (`\\n`)，**严禁**使用空行 (`\\n\\n`)。
    - **纯净输出**: **严禁**输出章节标题（如 "### {section_title}"），**严禁**包含“好的”、“根据要求”等对话内容。只输出正文。
 2. **数据使用**:
-   - 参考数据: {custom_data[:500]}...
+   - 参考数据: {custom_data}...
    - 如果用户提供了数据，请优先使用并进行分析；如果没有，请基于通用学术逻辑撰写。
 
 请开始重写，直接输出正文，注意格式排版。
@@ -109,12 +133,6 @@ def get_academic_thesis_prompt(
     section_rule = ""
     is_cn_abstract = "摘要" in current_chapter_title
     is_en_abstract = "Abstract" in current_chapter_title and "摘要" not in current_chapter_title
-
-    # 判断是否为需要图表的章节
-    needs_charts = False
-    keywords = ["实验", "测试", "分析", "结果", "数据", "设计", "实现", "验证", "Evaluation", "Analysis", "Design"]
-    if (chapter_num and any(k in current_chapter_title for k in keywords)) or has_user_data:
-        needs_charts = True
     
     # A. 摘要
     if is_cn_abstract:
@@ -314,11 +332,19 @@ def get_academic_thesis_prompt(
     **Python代码要求**:
         - 必须包含完整导入: `import matplotlib.pyplot as plt`, `import seaborn as sns`, `import pandas as pd`, `import numpy as np`。
         - **中文支持(CRITICAL)**: 必须包含 `plt.rcParams['font.sans-serif'] = ['SimHei']` 和 `plt.rcParams['axes.unicode_minus'] = False`。
+        - **Seaborn规范(CRITICAL)**: 在使用 `sns.barplot` 或其他带 `palette` 参数的绘图函数时，**必须**将 `x` 轴变量赋值给 `hue` 参数，并设置 `legend=False`。
+          - 错误示例: `sns.barplot(x='Year', y='Value', palette='viridis')`
+          - 正确示例: `sns.barplot(x='Year', y='Value', hue='Year', palette='viridis', legend=False)`
         - **画布设置(CRITICAL)**: 必须在绘图前设置画布大小为横向长图：`plt.figure(figsize=(10, 6))`。严禁生成正方形图片。
+        - **绘图逻辑**: 直接使用 `plt.figure` 创建画布，然后用 `sns.lineplot/barplot` 绘图。**不要使用 subplots，不要使用 ax1/ax2 等复杂对象，直接 plt.xxx 即可**。
         - **数据定义**: 数据必须在代码内完整定义(DataFrame)，严禁读取外部文件。
         - **风格**: 使用 `sns.set_theme(style="whitegrid")`。
         - **输出**: 代码最后不需要 `plt.show()`。
         - **图名**: 代码块下方必须输出 `**图{chapter_num}.X 图名**`。
+        - **静默输出 (CRITICAL)**: 
+            1. **严禁**在代码块外部输出任何步骤标题！
+            2. **绝对禁止**出现以下文字：“设置绘图风格”、“定义数据”、“创建画布”、“绘制图形”、“添加标签”。
+            3. 你的输出格式必须是：[正文上一段] -> [Python代码块] -> [正文下一段]。
     """
     # 基础配置：Markdown 表格设置 (用于 Table 模式)
     table_config = """
@@ -346,6 +372,10 @@ def get_academic_thesis_prompt(
 2.  **严禁制表**: 本节**禁止**使用 Markdown 表格展示核心数据，必须转化成可视化图形。
 {plot_config}
 3.  **图文互动**: 正文中必须包含“如图{chapter_num}.X所示”的引用分析。
+3.  **纯净模式**: 
+    - 不要像写教程一样解释代码。
+    - **严禁**把“定义数据”、“创建画布”等步骤作为小标题写出来。
+    - 直接给代码，不要废话。
 """
 
     else:

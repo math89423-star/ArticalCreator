@@ -21,7 +21,7 @@ class PaperAutoWriter:
         self.main_client = OpenAI(api_key=api_key, base_url=base_url, timeout=120.0)
     
     def _call_llm_with_client(self, client, system_prompt: str, user_prompt: str) -> str:
-        """[基础方法] 使用指定的 client 实例调用 LLM"""
+        """使用指定的 client 实例调用 LLM"""
         max_retries = 3
         for attempt in range(max_retries):
             try:
@@ -40,7 +40,7 @@ class PaperAutoWriter:
                     raise e 
 
     def _call_llm(self, system_prompt: str, user_prompt: str) -> str:
-        """[主线程] 调用方法"""
+        """调用方法"""
         return self._call_llm_with_client(self.main_client, system_prompt, user_prompt)
 
     def _research_phase_with_client(self, client, topic: str) -> str:
@@ -48,8 +48,9 @@ class PaperAutoWriter:
             response = client.chat.completions.create(
                 model=self.model,
                 messages=[
-                    {"role": "system", "content": "严谨数据分析师。列出关于主题的真实数据、政策。"},
-                    {"role": "user", "content": f"检索关于'{topic}'的真实事实："}
+                    # [修改] 强调时间范围 2020-2025
+                    {"role": "system", "content": "你是一名严谨的数据分析师。请重点检索**近5年（2020-2025）**的真实数据、最新政策和行业报告。忽略2019年以前的过时信息。"},
+                    {"role": "user", "content": f"检索关于'{topic}'的真实事实（必须是2020年以后的数据）："}
                 ],
                 temperature=0.3, stream=False
             )
@@ -235,10 +236,7 @@ class PaperAutoWriter:
                  except Exception as e:
                     print(f"扩写失败: {e}")
 
-            # =========================================================
-            # [新增] 后处理：将 Python 代码块转换为 Base64 图片
-            # (放在扩写之后，确保扩写生成的代码也能被转换)
-            # =========================================================
+            # 将 Python 代码块转换为 Base64 图片
             def replacer(match):
                 code = match.group(1)
                 img_buf = MarkdownToDocx.exec_python_plot(code)
@@ -297,9 +295,6 @@ class PaperAutoWriter:
         for chunk in self._call_llm_stream_with_client(self.main_client, system_prompt, user_prompt):
             yield chunk
 
-    # --------------------------------------------------------------------------
-    # 并发生成器
-    # --------------------------------------------------------------------------
     def _format_outline(self, chapters: List[Dict]) -> str:
         outline_lines = []
         for ch in chapters:
@@ -342,23 +337,19 @@ class PaperAutoWriter:
                 if self._check_process_status(check_status_func):
                     executor.shutdown(wait=False)
                     break
-                
                 while True:
                     try:
                         result = future.result(timeout=1)
                         for log in result.get('logs', []):
                             yield f"data: {json.dumps({'type': 'log', 'msg': log})}\n\n"
-                        
                         if result['type'] == 'error':
                             yield f"data: {json.dumps({'type': 'log', 'msg': result['msg']})}\n\n"
                             break
-
                         if result['type'] in ['content', 'header_only']:
                             content_md = result['content']
                             full_content += content_md
                             yield f"data: {json.dumps({'type': 'content', 'md': content_md})}\n\n"
                             global_context += result.get('raw_text', '')[-200:]
-                        
                         break
                     except concurrent.futures.TimeoutError:
                         yield f": keep-alive\n\n"
@@ -374,22 +365,13 @@ class PaperAutoWriter:
             yield f"data: {json.dumps({'type': 'content', 'md': bib})}\n\n"
             yield f"data: {json.dumps({'type': 'done'})}\n\n"
 
-    # --------------------------------------------------------------------------
-    # 其他公共方法
-    # --------------------------------------------------------------------------
+
 
     def rewrite_chapter(self, title: str, section_title: str, user_instruction: str, context: str, custom_data: str, original_content: str = "") -> str:
         chapter_num = self._extract_chapter_num(section_title)
-        
         sys_prompt = get_rewrite_prompt(title, section_title, user_instruction, context[-800:], custom_data, original_content, chapter_num)
-        
         user_prompt = f"论文题目：{title}\n请修改章节：{section_title}\n用户的具体修改意见：{user_instruction}\n【最高指令】直接输出正文。如果需要绘图，请输出完整的 Markdown 代码块 (```python ... ```)，不要解释代码。"
-        
         content = self._call_llm(sys_prompt, user_prompt)
-
-        # =========================================================
-        # [Step 1] 清洗废话标题 (保持不变，但更小心)
-        # =========================================================
         garbage_patterns = [
             r'^\s*(?:#+|\*\*|)?\s*(?:设置|定义|创建|绘制|添加|导入|准备)(?:绘图)?(?:风格|数据|变量|画布|条形图|折线图|饼图|统计图|图表|数值|标签|引用|相关库|代码).*?$',
             r'^\s*(?:#+|\*\*|)?\s*Python\s*代码(?:如下|示例)?[:：]?\s*$',
@@ -397,29 +379,18 @@ class PaperAutoWriter:
         ]
         for pat in garbage_patterns:
             content = re.sub(pat, '', content, flags=re.MULTILINE | re.IGNORECASE)
-
-        # =========================================================
-        # [Step 2] 核心修复：更健壮的代码块提取与替换
-        # =========================================================
-        
-        # 定义一个专门用来找 python 代码块的正则
         # (```python\s+[\s\S]*?```) : 匹配完整的代码块
         code_block_pattern = re.compile(r'(```python\s+[\s\S]*?```)', re.IGNORECASE)
-        
         def image_replacer(match):
             full_block = match.group(1) # 完整的 ```python ... ``` 字符串
-            
             # 提取内部代码：去掉首尾的 ```python 和 ```
             # 使用 split 而不是正则，防止误伤内部内容
             lines = full_block.strip().split('\n')
             if len(lines) < 2: return "" # 空块
-            
             # 去掉第一行 (```python) 和最后一行 (```)
             code_lines = lines[1:-1]
             code = '\n'.join(code_lines).strip()
-            
             if not code: return ""
-
             try:
                 img_buf = MarkdownToDocx.exec_python_plot(code)
                 if img_buf:
@@ -433,18 +404,13 @@ class PaperAutoWriter:
             except Exception as e:
                 print(f"Plot Logic Error: {e}")
                 return ""
-
-        # 执行替换
         # 注意：这里使用 re.sub，它会自动处理所有匹配到的块
         new_content = code_block_pattern.sub(image_replacer, content)
-        
         # [Step 3] 兜底检查：如果替换后还有残留的 ```，说明格式坏了
         # 我们可以尝试强行移除所有残留的 ```python 和 ```
         # 但通常 Step 2 处理完后，new_content 里应该已经没有代码块了
-        
         # [Step 4] 清理多余空行
         new_content = re.sub(r'\n{3,}', '\n\n', new_content)
-
         return new_content.strip()
     
     def plan_word_count(self, total_words: int, outline_list: List[str]) -> Dict[str, Dict]:

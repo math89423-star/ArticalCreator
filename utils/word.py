@@ -268,7 +268,9 @@ class MarkdownToDocx:
                 continue
             
             # Base64 图片
-            img_match = re.match(r'^!\[.*?\]\(data:image\/png;base64,(.*?)\)', line)
+            img_match = re.search(r'!\[.*?\]\(data:image\/png;base64,(.*?)\)', line)
+            if not img_match:
+                img_match = re.search(r'src=["\']data:image\/png;base64,(.*?)["\']', line)
             if img_match:
                 try:
                     base64_str = img_match.group(1)
@@ -277,6 +279,7 @@ class MarkdownToDocx:
                     p = doc.add_paragraph()
                     p.alignment = WD_ALIGN_PARAGRAPH.CENTER
                     run = p.add_run()
+                    # 设置图片宽度为 14cm，适配 A4 纸
                     run.add_picture(img_stream, width=Cm(14)) 
                 except Exception as e:
                     print(f"Base64 Image Error: {e}")

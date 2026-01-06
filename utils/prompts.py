@@ -335,23 +335,26 @@ def get_academic_thesis_prompt(
     # 引用指令
     ref_instruction = ""
     # 定义属于“综述/现状”的关键词
-    review_keywords = ["国内研究现状", "国外研究现状", "文献综述", "Review", "Status", "文献述评", "Literature"]
+    review_keywords = ["国内研究现状", "国外研究现状", "文献综述", "Review", "Status", "Literature"]
     is_review_chapter = any(k in current_chapter_title for k in review_keywords)
     if ref_content_list and is_review_chapter:
         # 只有在综述章节，才强制要求引用
         ref_instruction = f"""
 ### **策略D: 引用执行 (Citation)**
 本章节**必须**引用分配的文献。
-1. **格式**: 在提到观点时，使用 `[REF]` 标记。
-2. **数量**: 必须插入 {len(ref_content_list)} 个 `[REF]` 标记。
-3. **关联**: 即使文献不完全相关，也要用“此外，也有研究从...角度指出”强行关联，实现逻辑闭环。
+1. **格式**: 在提到观点时，请根据提供的文献列表顺序，使用 `[1]`、`[2]` 等具体序号进行标注。
+   - **错误示例**: 张三指出...[REF]
+   - **正确示例**: 张三(2023)指出...[1]
+2. **严禁占位**: **绝对禁止**输出 `[REF]`、`[Reference]` 等无意义的英文占位符。
+3. **数量**: 必须插入 {len(ref_content_list)} 个引用标记。
+4. **关联**: 即使文献不完全相关，也要用“此外，也有研究从...角度指出”强行关联，实现逻辑闭环。
 """
     else:
         # 其他章节（如绪论、理论、实证、结论等）严禁引用
         ref_instruction = """
 ### **策略D: 引用禁令 (Citation Ban)**
 **本章节严禁引用参考文献列表**。
-1. **绝对禁止**使用 `[REF]` 标记。
+1. **绝对禁止**使用 `[REF]`、`[1]` 等引用标记。
 2. **绝对禁止**提及“文献[x]”、“某学者指出”等综述性语言。
 3. 请完全基于**理论推导**、**用户提供的数据**或**通用学术知识**进行论述。
 """

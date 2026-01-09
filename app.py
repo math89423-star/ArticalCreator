@@ -15,6 +15,7 @@ from waitress import serve
 from flask import Flask, render_template, request, Response, stream_with_context, jsonify, send_file, session
 from utils.word import MarkdownToDocx
 from utils.paperautowriter import PaperAutoWriter
+from utils.word import TextReportParser
 
 app = Flask(__name__)
 app.secret_key = "super_secret_key_for_session" # 用于管理员登录Session
@@ -133,19 +134,18 @@ class TaskManager:
             return self._user_tasks[user_id][task_id]['status']
 
 task_manager = TaskManager()
-# ==============================================================================
-# 多格式文件内容提取工具
-# ==============================================================================
+
+
 def extract_file_content(file_stream, filename) -> str:
     """
     根据文件后缀名，提取文件内容为纯文本字符串。
-    注意：file_stream 必须是 BytesIO 或已打开的文件对象
+    [修改] 使用 XML 标签包裹内容，便于 LLM 区分不同文件来源
     """
     filename = filename.lower()
-    content = ""
+    raw_text = "" # 临时变量存储提取出的纯文本
     
     try:
-        # 重置指针，防止读取位置错误
+        # 重置指针
         if hasattr(file_stream, 'seek'):
             file_stream.seek(0)
 
@@ -156,56 +156,58 @@ def extract_file_content(file_stream, filename) -> str:
             except UnicodeDecodeError:
                 file_stream.seek(0)
                 df = pd.read_csv(file_stream, encoding='gbk')
-            content = f"\n【文件 {filename} 数据预览(前60行)】:\n" + df.head(60).to_markdown(index=False)
+            raw_text = df.head(60).to_markdown(index=False)
         
         elif filename.endswith(('.xls', '.xlsx')):
             df = pd.read_excel(file_stream)
-            content = f"\n【文件 {filename} 数据预览(前60行)】:\n" + df.head(60).to_markdown(index=False)
+            raw_text = df.head(60).to_markdown(index=False)
             
         # 2. TXT
         elif filename.endswith('.txt'):
-            content = f"\n【文件 {filename} 内容】:\n"
             try:
-                text = file_stream.read().decode('utf-8')
+                raw_text = file_stream.read().decode('utf-8')
             except:
                 file_stream.seek(0)
-                text = file_stream.read().decode('gbk', errors='ignore')
-            content += text[:5000]
+                raw_text = file_stream.read().decode('gbk', errors='ignore')
+            raw_text = raw_text[:8000] # 限制长度防止溢出
             
         # 3. PDF
         elif filename.endswith('.pdf'):
             reader = pypdf.PdfReader(file_stream)
-            text = ""
             for i, page in enumerate(reader.pages[:15]): 
                 page_text = page.extract_text()
                 if page_text: 
-                    text += f"[第{i+1}页] {page_text}\n"
-            content = f"\n【文件 {filename} 内容提取】:\n{text}"
+                    raw_text += f"[Page {i+1}] {page_text}\n"
 
         # 4. DOCX
         elif filename.endswith('.docx'):
             doc = docx.Document(file_stream)
-            text = ""
             for para in doc.paragraphs:
                 if para.text.strip():
-                    text += para.text + "\n"
+                    raw_text += para.text + "\n"
             for table in doc.tables:
                 for row in table.rows:
                     row_text = [cell.text.strip() for cell in row.cells]
-                    text += " | ".join(row_text) + "\n"
-            content = f"\n【文件 {filename} 内容提取】:\n{text[:5000]}"
+                    raw_text += " | ".join(row_text) + "\n"
+            raw_text = raw_text[:8000]
 
         else:
-            content = f"\n【文件 {filename}】: 暂不支持该格式解析。"
+            return f"" # 不支持的文件忽略
             
     except Exception as e:
         print(f"解析文件 {filename} 失败: {e}")
-        content = f"\n【文件 {filename}】: 解析失败 - {str(e)}"
-        
-    return content
+        return "" # 失败返回空，不报错
+
+    # [核心修改] 返回 XML 格式的结构化数据
+    # 这让 LLM 知道：这里开始是一个新文件，文件名叫什么
+    return f"""
+<datasource name="{filename}">
+{raw_text}
+</datasource>
+"""
 
 # 1. 后台工作线程函数 (现在负责所有重活)
-def background_worker(writer, task_id, title, chapters, ref_domestic, ref_foreign, text_custom_data, raw_files_data, check_status_func, initial_context, user_id):
+def background_worker(writer, task_id, title, chapters, ref_domestic, ref_foreign, text_custom_data, raw_files_data, check_status_func, initial_context, user_id, extra_instructions):
     try:
         # 1. 在后台线程中进行文件解析 (耗时操作放在这里，不阻塞主线程)
         final_custom_data = text_custom_data
@@ -230,7 +232,7 @@ def background_worker(writer, task_id, title, chapters, ref_domestic, ref_foreig
 
         # 2. 执行生成器
         generator = writer.generate_stream(
-            task_id, title, chapters, ref_domestic, ref_foreign, final_custom_data, check_status_func, initial_context
+            task_id, title, chapters, ref_domestic, ref_foreign, final_custom_data, check_status_func, initial_context, extra_instructions
         )
         
         # 3. 逐条消费
@@ -344,6 +346,7 @@ def generate_start():
     ref_domestic = request.form.get('ref_domestic', '')
     ref_foreign = request.form.get('ref_foreign', '')
     text_custom_data = request.form.get('custom_data', '')
+    extra_instructions = request.form.get('extra_instructions', '')
     task_id = request.form.get('task_id')
     initial_context = request.form.get('initial_context', '')
     
@@ -370,7 +373,7 @@ def generate_start():
     # 启动后台线程
     t = threading.Thread(
         target=background_worker,
-        args=(writer, task_id, title, json.loads(raw_chapters), ref_domestic, ref_foreign, text_custom_data, raw_files_data, check_status_func, initial_context, user_id)
+        args=(writer, task_id, title, json.loads(raw_chapters), ref_domestic, ref_foreign, text_custom_data, raw_files_data, check_status_func, initial_context, user_id, extra_instructions)
     )
     t.daemon = True 
     t.start()

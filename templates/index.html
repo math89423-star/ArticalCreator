@@ -72,7 +72,7 @@
                             <span><span class="step-badge">2</span>完整大纲 (用于解析)</span>
                             <a href="#" class="text-decoration-none small" onclick="loadDemoOutline()">填入示例</a>
                         </label>
-                        <textarea class="form-control" id="outlineRaw" rows="6" placeholder="粘贴大纲文本..." required></textarea>
+                        <textarea class="form-control" id="outlineRaw" rows="15" placeholder="粘贴大纲文本..." required></textarea>
                         <button type="button" class="btn btn-sm btn-outline-primary w-100 mt-1" onclick="parseOutline()">⬇️ 1. 解析大纲并生成配置</button>
                     </div>
 
@@ -101,11 +101,11 @@
                         <label class="form-label fw-bold"><span class="step-badge">4</span>参考文献配置</label>
                         <div class="mb-2">
                             <label class="form-label small text-muted">A. 国内参考文献 (用于国内现状)</label>
-                            <textarea class="form-control" id="refDomestic" rows="3" placeholder="张三. 数字化转型研究[J]. ..."></textarea>
+                            <textarea class="form-control" id="refDomestic" rows="6" placeholder="张三. 数字化转型研究[J]. ..."></textarea>
                         </div>
                         <div>
                             <label class="form-label small text-muted">B. 国外参考文献 (用于国外现状)</label>
-                            <textarea class="form-control" id="refForeign" rows="3" placeholder="Smith J. Digital Transformation..."></textarea>
+                            <textarea class="form-control" id="refForeign" rows="6" placeholder="Smith J. Digital Transformation..."></textarea>
                         </div>
                     </div>
                     <div class="mb-3 p-3 bg-white rounded shadow-sm border">
@@ -113,15 +113,11 @@
                             <i class="bi bi-clipboard-data"></i> 粘贴开题报告
                         </label>
                         <div class="text-muted small mb-2">
-                            <i class="bi bi-info-circle"></i> 请直接从 Word/PDF 中<b>全选复制</b>开题报告的所有文字，粘贴到下方，然后点击解析。
+                            <i class="bi bi-info-circle"></i> 请直接从 Word/PDF 中<b>全选复制</b>开题报告的所有文字，粘贴到下方。
                         </div>
                         
-                        <textarea class="form-control mb-2" id="openingReportPasteArea" rows="6" 
+                        <textarea class="form-control mb-2" id="openingReportPasteArea" rows="15" 
                                 placeholder="在此处粘贴开题报告全文（包含题目、综述、大纲、参考文献等）..."></textarea>
-                        
-                        <button class="btn btn-primary w-100" type="button" id="btnParseReportText">
-                            <i class="bi bi-magic"></i> 解析粘贴内容
-                        </button>
                         
                         <div id="reportParseStatus" class="mt-2 small text-secondary"></div>
                     </div>
@@ -137,7 +133,16 @@
                             </div>
                             <div id="fileListDisplay" class="mt-2 small text-dark ps-2"></div>
                         </div>
-                        <textarea class="form-control" id="customData" rows="2" placeholder="在此补充数据的文字说明，或直接粘贴小段文本..."></textarea>
+                        
+                        <textarea class="form-control" id="customData" rows="20" 
+                                  style="min-height: 200px; font-family: 'Consolas', monospace; font-size: 0.9rem;"
+                                  placeholder="在此补充数据的文字说明，或直接粘贴小段文本..."></textarea>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label fw-bold"><span class="step-badge">6</span>额外具体需求 (可选)</label>
+                        <textarea class="form-control" name="extra_instructions" id="extraInstructions" rows="9" 
+                                  placeholder="在此输入针对特定章节的详细要求。例如：&#10;第四章 4.2节必须使用三线表展示问卷数据，分析时请以满分5分为标准；&#10;结论部分需要包含对未来研究的3点展望..."></textarea>
+                        <div class="form-text text-muted small"><i class="bi bi-info-circle"></i> AI 会根据您输入的章节号（如“4.2”）自动匹配并执行要求。</div>
                     </div>
 
                     <button type="submit" id="btnSubmit" class="btn btn-primary w-100 fw-bold py-2">🚀 3. 开始生成</button>

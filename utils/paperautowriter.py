@@ -138,28 +138,186 @@ class PaperAutoWriter:
                 # 非表格行保持原样 (保留原有的缩进)
                 new_lines.append(line)
         return '\n'.join(new_lines)
-    
+
+    def _prepare_data_context(self, chapter: Dict, sec_title: str, custom_data: str, local_client, title: str) -> tuple:
+        """辅助方法：准备数据上下文 (含数据路由与联网搜索)"""
+        facts_context = ""
+        logs = []
+        use_data_flag = chapter.get('use_data', False)
+        has_user_data = False
+
+        if "摘要" not in sec_title and use_data_flag:
+            if custom_data and len(custom_data.strip()) > 5:
+                cleaned_data = TextCleaner.convert_cn_numbers(custom_data)
+                facts_context += f"""
+\n================ 【本研究核心调研数据库 (Research Database)】 ================
+{cleaned_data}
+============================================================================
+
+【⚠️ 数据使用最高指令 (Data Usage & Integration Rules)】：
+1. **智能路由 (Smart Routing)**: 
+   - 上方数据库包含多个 `<datasource>` (来源文件)。
+   - 请根据当前章节标题 **“{sec_title}”**，智能筛选出与本章主题**最相关**的一个或几个文件进行分析。
+   - **严禁串味**: 如果本章讲“财务”，请忽略“人员名单”类的数据。
+
+2. **隐形融入 (Seamless Integration - CRITICAL)**:
+   - **角色设定**: 你是论文的作者，这些数据是你**亲自调研、收集和整理**的一手资料。
+   - **绝对禁语**: **严禁**在正文中出现“用户提供”、“上传的文件”、“根据给定的数据”、“附件中”等打破学术语境的词汇。
+   - **正确写法**: 将数据转化为自然的学术论述。
+     - ❌ 错误: “根据用户提供的《2023财报》显示...”
+     - ✅ 正确: “根据2023年度财务报表数据显示...” / “数据显示，...” / “从资产负债情况来看...”
+   - **图表配合**: 如果文中列举了大量数据，请用文字对数据背后的**趋势、占比、异常值**进行分析，而不仅仅是报账。
+
+3. **数据实证**: 
+   - 本章节 **必须** 引用上述数据库中的具体数值作为论据。
+   - 没有数据的论述是空洞的，必须用数据说话（例如：“增长了15%”、“占比达到40%”）。
+"""
+                has_user_data = True
+            
+            # 联网搜索逻辑
+            # facts = self._research_phase_with_client(local_client, f"{title} - {sec_title} 数据")
+            # if facts:
+            #    facts_context += f"\n【联网补充数据】:\n{facts}\n"
+        
+        return facts_context, has_user_data, logs
+
+    def _prepare_ref_context(self, sec_title: str, ref_domestic: str, ref_foreign: str) -> tuple:
+        """辅助方法：准备参考文献上下文"""
+        logs = []
+        target_ref_list = []
+        is_domestic_review = "国内" in sec_title and ("现状" in sec_title or "综述" in sec_title)
+        is_foreign_review = "国外" in sec_title and ("现状" in sec_title or "综述" in sec_title)
+        
+        raw_ref_text = ""
+        if is_domestic_review:
+            logs.append(f"   - 📚 锁定：国内参考文献")
+            raw_ref_text = ref_domestic
+        elif is_foreign_review:
+            logs.append(f"   - 📚 锁定：国外参考文献")
+            raw_ref_text = ref_foreign
+        else:
+            raw_ref_text = f"{ref_domestic}\n{ref_foreign}"
+
+        if raw_ref_text:
+            target_ref_list = [line.strip() for line in raw_ref_text.split('\n') if line.strip()][:8]
+            
+        return target_ref_list, logs
+
+    def _generate_raw_content(self, client, title, sec_title, context_summary, target, 
+                              facts_context, has_user_data, target_ref_list, 
+                              full_outline_str, chart_type, extra_instructions) -> tuple:
+        """辅助方法：构建 Prompt 并调用 LLM 生成原始内容"""
+        logs = []
+        chapter_num = self._extract_chapter_num(sec_title)
+        
+        # 1. 自动检测语言模式 (用于决定 User Prompt 的语言)
+        import re
+        is_chinese_mode = bool(re.search(r'[\u4e00-\u9fa5]', sec_title))
+        
+        # 2. 构建 System Prompt (内部会自动分发 CN/EN)
+        sys_prompt = get_academic_thesis_prompt(
+            target, 
+            target_ref_list, 
+            sec_title, 
+            chapter_num, 
+            has_user_data, 
+            full_outline=full_outline_str,
+            chart_type=chart_type
+        )
+        
+        # 3. 构建 User Prompt (双语适配)
+        user_prompt = ""
+        if is_chinese_mode:
+            # 中文指令
+            user_prompt = f"题目：{title}\n章节：{sec_title}\n前文摘要：{context_summary}\n【重要约束】目标字数：{target}字\n{facts_context}"
+            
+            if extra_instructions and len(extra_instructions.strip()) > 0:
+                user_prompt += f"\n\n【用户额外具体需求 (最高优先级)】\n{extra_instructions}\n"
+        else:
+            # 英文指令 (Strict Translation)
+            user_prompt = f"Thesis Title: {title}\nChapter: {sec_title}\nContext Summary: {context_summary}\n[Constraint] Target Word Count: {target}\n{facts_context}"
+            
+            if extra_instructions and len(extra_instructions.strip()) > 0:
+                user_prompt += f"\n\n[User Extra Instructions (High Priority)]\n{extra_instructions}\n"
+
+        # 4. 调用 LLM
+        content = self._call_llm_with_client(client, sys_prompt, user_prompt)
+
+        # 5. 字数扩写检查 (双语适配)
+        content_no_code = re.sub(r'```[\s\S]*?```', '', content)
+        current_len = len(re.sub(r'\s', '', content_no_code))
+        
+        # 英文单词通常比汉字多，所以英文模式下字数阈值可以适当调整，或者按字符数估算
+        # 这里简化处理，逻辑保持一致
+        if "abstract" not in sec_title.lower() and "摘要" not in sec_title and target > 300 and current_len < target * 0.5:
+            try:
+                logs.append(f"   - ⚠️ Word count low ({current_len}/{target}), expanding...")
+                expand_instruction = "\n\n请大幅扩写，增加细节，确保字数达标。" if is_chinese_mode else "\n\nPlease expand significantly, adding details to meet the word count requirement."
+                content = self._call_llm_with_client(client, sys_prompt, user_prompt + expand_instruction)
+            except Exception as e:
+                print(f"Expansion failed: {e}")
+                
+        return content, logs
+
+    def _process_code_blocks(self, content: str) -> str:
+        """辅助方法：处理 Python 代码块、自动闭合与绘图执行"""
+        
+        # 1. 自动闭合修复
+        if content.count('```') % 2 != 0:
+            content += "\n```"
+
+        # 2. 定义宽容的正则
+        code_block_pattern = re.compile(r'(```\s*(?:python|py)?\s*[\s\S]*?```)', re.IGNORECASE)
+
+        def replacer(match):
+            full_block = match.group(1)
+            # 提取纯代码
+            lines = full_block.strip().split('\n')
+            code_lines = [line for line in lines if '```' not in line]
+            
+            if not code_lines: return match.group(0)
+            
+            code = '\n'.join(code_lines).strip()
+            if not code: return match.group(0)
+
+            try:
+                # 执行绘图
+                img_buf = MarkdownToDocx.exec_python_plot(code)
+                if img_buf:
+                    b64_data = base64.b64encode(img_buf.getvalue()).decode('utf-8')
+                    return f"\n![统计图](data:image/png;base64,{b64_data})\n"
+                else:
+                    return match.group(0)
+            except Exception as e:
+                print(f"Plot Execution Error: {e}")
+                return match.group(0)
+
+        # 执行替换
+        return code_block_pattern.sub(replacer, content)
+
     def _process_single_chapter(self, task_bundle):
-        """线程工作函数 (修复版)"""
+        """线程工作函数 (重构版)"""
         i = -1
         sec_title = "未知章节"
         logs = []
+        
         try:
-            if len(task_bundle) < 12: 
+            # 1. 参数解包与校验
+            if len(task_bundle) < 13: 
                 return { "index": -1, "type": "error", "msg": f"参数不足: {len(task_bundle)}", "logs": [] }
 
             (api_key, base_url, model, task_id, title, chapter, 
              ref_domestic, ref_foreign, 
              custom_data, context_summary, index_val, 
-             full_outline_str) = task_bundle
+             full_outline_str, extra_instructions) = task_bundle
             
             i = index_val
             sec_title = chapter.get('title', '无标题')
             target = int(chapter.get('words', 500))
             is_parent = chapter.get('is_parent', False)
-            chart_type = chapter.get('chart_type', 'none') # [新增] 获取图表类型
+            chart_type = chapter.get('chart_type', 'none')
 
-            # 2. 标题处理 (父节点直接返回)
+            # 2. 标题与层级处理
             header_prefix = self._determine_header_prefix(chapter, sec_title)
             if is_parent or target <= 0:
                 return {
@@ -170,94 +328,46 @@ class PaperAutoWriter:
 
             # 3. 初始化 Client
             local_client = OpenAI(api_key=api_key, base_url=base_url, timeout=120.0)
-            
-            chapter_num = self._extract_chapter_num(sec_title)
             logs.append(f"🚀 [并发启动] 正在撰写: {sec_title}")
 
-            # 4. 数据上下文准备
-            facts_context = ""
-            use_data_flag = chapter.get('use_data', False)
-            has_user_data = False
-            
-            if "摘要" not in sec_title and use_data_flag:
-                if custom_data and len(custom_data.strip()) > 5:
-                    cleaned_data = TextCleaner.convert_cn_numbers(custom_data)
-                    facts_context += f"\n【用户真实数据】:\n{cleaned_data}\n"
-                    has_user_data = True
-                
-                # logs.append(f"   - 🔍 [并行检索] 补充数据...")
-                facts = self._research_phase_with_client(local_client, f"{title} - {sec_title} 数据")
-                if facts:
-                    facts_context += f"\n【联网补充数据】:\n{facts}\n"
-
-            # 5. 智能文献选择逻辑
-            target_ref_list = []
-            is_domestic_review = "国内" in sec_title and ("现状" in sec_title or "综述" in sec_title)
-            is_foreign_review = "国外" in sec_title and ("现状" in sec_title or "综述" in sec_title)
-            
-            raw_ref_text = ""
-            if is_domestic_review:
-                logs.append(f"   - 📚 锁定：国内参考文献")
-                raw_ref_text = ref_domestic
-            elif is_foreign_review:
-                logs.append(f"   - 📚 锁定：国外参考文献")
-                raw_ref_text = ref_foreign
-            else:
-                raw_ref_text = f"{ref_domestic}\n{ref_foreign}"
-
-            if raw_ref_text:
-                target_ref_list = [line.strip() for line in raw_ref_text.split('\n') if line.strip()][:8]
-
-            # 6. Prompt 构建
-            sys_prompt = get_academic_thesis_prompt(
-                target, 
-                target_ref_list, 
-                sec_title, 
-                chapter_num, 
-                has_user_data, 
-                full_outline=full_outline_str,
-                chart_type=chart_type # [新增] 传入图表类型
+            # 4. 准备上下文 (数据 + 文献)
+            facts_context, has_user_data, data_logs = self._prepare_data_context(
+                chapter, sec_title, custom_data, local_client, title
             )
-            user_prompt = f"题目：{title}\n章节：{sec_title}\n前文摘要：{context_summary}\n【重要约束】目标字数：{target}字\n{facts_context}"
+            logs.extend(data_logs)
 
-            # 7. LLM 调用 (初次生成)
-            content = self._call_llm_with_client(local_client, sys_prompt, user_prompt)
+            target_ref_list, ref_logs = self._prepare_ref_context(
+                sec_title, ref_domestic, ref_foreign
+            )
+            logs.extend(ref_logs)
 
-            # 8. 字数检查与扩写
-            #    先去掉代码块算字数，避免被代码撑大
-            content_no_code = re.sub(r'```[\s\S]*?```', '', content)
-            current_len = len(re.sub(r'\s', '', content_no_code))
-            
-            if "摘要" not in sec_title and target > 300 and current_len < target * 0.5:
-                 try:
-                    logs.append(f"   - ⚠️ 字数不足({current_len}/{target})，触发扩写...")
-                    # 扩写结果直接覆盖 content
-                    content = self._call_llm_with_client(local_client, sys_prompt, user_prompt + "\n\n请大幅扩写，增加细节，确保字数达标。")
-                 except Exception as e:
-                    print(f"扩写失败: {e}")
+            # 5. 生成核心内容 (含扩写重试)
+            content, gen_logs = self._generate_raw_content(
+                local_client, title, sec_title, context_summary, target,
+                facts_context, has_user_data, target_ref_list,
+                full_outline_str, chart_type, extra_instructions
+            )
+            logs.extend(gen_logs)
 
-            # 将 Python 代码块转换为 Base64 图片
-            def replacer(match):
-                code = match.group(1)
-                img_buf = MarkdownToDocx.exec_python_plot(code)
-                if img_buf:
-                    b64_data = base64.b64encode(img_buf.getvalue()).decode('utf-8')
-                    return f"\n![统计图](data:image/png;base64,{b64_data})\n"
-                else:
-                    return match.group(0)
-
-            content = re.sub(r'```python\s+(.*?)```', replacer, content, flags=re.DOTALL)
+            # 6. 后处理 (代码执行、格式清洗)
+            content = self._process_code_blocks(content)
             content = self._clean_and_format(content, sec_title, None)
             final_content = self._fix_markdown_table_format(content)
+            
+            # 7. 组装结果
             section_md = f"{header_prefix} {sec_title}\n\n{final_content}\n\n"
 
             return {
                 "index": i, "type": "content", 
                 "content": section_md, "raw_text": final_content, "logs": logs
             }
+
         except Exception as e:
             err_msg = f"❌ {sec_title} 异常: {str(e)}"
             print(f"[Thread {i}] ERROR: {err_msg}")
+            # 打印详细堆栈以便调试
+            import traceback
+            traceback.print_exc()
             return { "index": i, "type": "error", "msg": str(e), "logs": [err_msg] }
         
     def write_section_content(self, 
@@ -302,7 +412,18 @@ class PaperAutoWriter:
             outline_lines.append(f"- {title}")
         return "\n".join(outline_lines)
 
-    def generate_stream(self, task_id: str, title: str, chapters: List[Dict], ref_domestic: str, ref_foreign: str, custom_data: str, check_status_func, initial_context: str = "") -> Generator[str, None, None]:
+    def generate_stream(
+            self, 
+            task_id: str, 
+            title: str, 
+            chapters: List[Dict], 
+            ref_domestic: str, 
+            ref_foreign: str, 
+            custom_data: str, 
+            check_status_func, 
+            initial_context: str = "", 
+            extra_instructions: str = ""
+            ) -> Generator[str, None, None]:
         
         # 这里的 ref_manager 主要用于最后生成文末的参考文献列表，所以合并两者
         combined_refs = f"{ref_domestic}\n{ref_foreign}"
@@ -327,7 +448,8 @@ class PaperAutoWriter:
                     task_id, title, chapter, 
                     ref_domestic, ref_foreign,  # <--- 新增的两个参数
                     custom_data, global_context[:800], i,
-                    full_outline_str
+                    full_outline_str,
+                    extra_instructions
                 )
                 future = executor.submit(self._process_single_chapter, task_bundle)
                 all_futures.append(future)
@@ -365,13 +487,17 @@ class PaperAutoWriter:
             yield f"data: {json.dumps({'type': 'content', 'md': bib})}\n\n"
             yield f"data: {json.dumps({'type': 'done'})}\n\n"
 
-
-
     def rewrite_chapter(self, title: str, section_title: str, user_instruction: str, context: str, custom_data: str, original_content: str = "") -> str:
         chapter_num = self._extract_chapter_num(section_title)
+        
+        # 1. 构建 Prompt
         sys_prompt = get_rewrite_prompt(title, section_title, user_instruction, context[-800:], custom_data, original_content, chapter_num)
         user_prompt = f"论文题目：{title}\n请修改章节：{section_title}\n用户的具体修改意见：{user_instruction}\n【最高指令】直接输出正文。如果需要绘图，请输出完整的 Markdown 代码块 (```python ... ```)，不要解释代码。"
+        
+        # 2. 调用 LLM
         content = self._call_llm(sys_prompt, user_prompt)
+
+        # 3. [Step 1] 清洗废话标题
         garbage_patterns = [
             r'^\s*(?:#+|\*\*|)?\s*(?:设置|定义|创建|绘制|添加|导入|准备)(?:绘图)?(?:风格|数据|变量|画布|条形图|折线图|饼图|统计图|图表|数值|标签|引用|相关库|代码).*?$',
             r'^\s*(?:#+|\*\*|)?\s*Python\s*代码(?:如下|示例)?[:：]?\s*$',
@@ -379,38 +505,54 @@ class PaperAutoWriter:
         ]
         for pat in garbage_patterns:
             content = re.sub(pat, '', content, flags=re.MULTILINE | re.IGNORECASE)
-        # (```python\s+[\s\S]*?```) : 匹配完整的代码块
-        code_block_pattern = re.compile(r'(```python\s+[\s\S]*?```)', re.IGNORECASE)
+
+        # =========================================================
+        # [Step 2] 核心修复：自动补全与宽容匹配
+        # =========================================================
+        
+        # A. 自动闭合修复：如果代码块标记是奇数个，说明 LLM 没写完，强制补全
+        if content.count('```') % 2 != 0:
+            content += "\n```"
+
+        # B. 宽容正则：允许 ```python, ``` python, 甚至不写 python 的 ``` 
+        # (?:python|py)? : 可选匹配语言标识
+        code_block_pattern = re.compile(r'(```\s*(?:python|py)?\s*[\s\S]*?```)', re.IGNORECASE)
+        
         def image_replacer(match):
-            full_block = match.group(1) # 完整的 ```python ... ``` 字符串
-            # 提取内部代码：去掉首尾的 ```python 和 ```
-            # 使用 split 而不是正则，防止误伤内部内容
-            lines = full_block.strip().split('\n')
-            if len(lines) < 2: return "" # 空块
-            # 去掉第一行 (```python) 和最后一行 (```)
-            code_lines = lines[1:-1]
+            full_block = match.group(1).strip()
+            
+            # 提取内部代码
+            lines = full_block.split('\n')
+            
+            # 过滤掉第一行 (```xxx) 和最后一行 (```)
+            # 只要这一行包含 ``` 就认为是标记行
+            code_lines = [line for line in lines if '```' not in line]
+            
+            if not code_lines: return "" # 空块
+            
             code = '\n'.join(code_lines).strip()
             if not code: return ""
+
             try:
+                # 执行绘图
                 img_buf = MarkdownToDocx.exec_python_plot(code)
                 if img_buf:
                     b64_data = base64.b64encode(img_buf.getvalue()).decode('utf-8')
                     # 返回图片 HTML
                     return f'\n\n<div align="center" class="plot-container"><img src="data:image/png;base64,{b64_data}" style="max-width:85%; border:1px solid #eee; padding:5px; border-radius:4px;"></div>\n\n'
                 else:
-                    # 如果执行失败，我们选择【保留原代码块】，方便调试，
-                    # 或者返回空字符串隐藏错误。这里选择返回空字符串，避免乱码。
+                    # 执行失败返回空，隐藏代码块
                     return "" 
             except Exception as e:
                 print(f"Plot Logic Error: {e}")
                 return ""
-        # 注意：这里使用 re.sub，它会自动处理所有匹配到的块
+
+        # 执行替换
         new_content = code_block_pattern.sub(image_replacer, content)
-        # [Step 3] 兜底检查：如果替换后还有残留的 ```，说明格式坏了
-        # 我们可以尝试强行移除所有残留的 ```python 和 ```
-        # 但通常 Step 2 处理完后，new_content 里应该已经没有代码块了
-        # [Step 4] 清理多余空行
+        
+        # [Step 3] 最后的扫尾
         new_content = re.sub(r'\n{3,}', '\n\n', new_content)
+
         return new_content.strip()
     
     def plan_word_count(self, total_words: int, outline_list: List[str]) -> Dict[str, Dict]:

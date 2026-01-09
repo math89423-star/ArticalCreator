@@ -1,126 +1,363 @@
 
 from typing import List
 
-
-def get_rewrite_prompt(thesis_title: str, section_title: str, user_instruction: str, context_summary: str, custom_data: str, original_content: str, chapter_num: str) -> str:
-    # 1. 动态生成上下文指令
-    context_logic_instruction = ""
-    trigger_keywords = ["绘图", "画图", "统计图", "图表", "重绘", "绘制", "三线表", "可视化", "plot", "chart", "数据图"]
-    should_trigger_vis = any(k in user_instruction for k in trigger_keywords)
-    visuals_section = ""
-    if should_trigger_vis:
-        # 只有检测到关键词，才注入详细的绘图规范
-        visuals_section = f"""
-6. **可视化响应（Visualization Strategy - ACTIVATED）**：
-    - **执行动作**：用户指令中包含绘图要求。请根据本节论述的数据，编写 Python 代码绘制最合适的统计图，或者绘制三线表。
-      (1)**Python代码要求**:
-        1.必须包含完整导入: `import matplotlib.pyplot as plt`, `import seaborn as sns`, `import pandas as pd`, `import numpy as np`。
-        2.**中文支持(CRITICAL)**: 必须包含 `plt.rcParams['font.sans-serif'] = ['SimHei']` 和 `plt.rcParams['axes.unicode_minus'] = False`。
-        3.**Seaborn规范(CRITICAL)**: 在使用 `sns.barplot` 或其他带 `palette` 参数的绘图函数时，**必须**将 `x` 轴变量赋值给 `hue` 参数，并设置 `legend=False`。
-        4.**画布设置(CRITICAL)**: 必须在绘图前设置画布大小为横向长图：`plt.figure(figsize=(10, 6))`。严禁生成正方形图片。
-        5.**数据定义**: 数据必须在代码内完整定义(DataFrame)，严禁读取外部文件。
-        6.**风格**: 使用 `sns.set_theme(style="whitegrid")`。
-        7.**输出**: 代码最后不需要 `plt.show()`。
-        8.**图名**: 代码块下方必须输出 `**图{chapter_num}.X 图名**`。
-       (2)**表格要求**:
-        1.必须使用标准 Markdown 三线表格式。
-        2.数据必须精确，表头清晰。
-        3.**表名**: 表格上方必须输出 `**表{chapter_num}.X 表名**`。
-    - **静默输出 (CRITICAL)**: 
-            1. **严禁**在代码块外部输出任何步骤标题！
-            2. **绝对禁止**出现以下文字：“设置绘图风格”、“定义数据”、“创建画布”、“绘制图形”、“添加标签”。
-            3. 你的输出格式必须是：[正文上一段] -> [Python代码块] -> [正文下一段]。
-"""
+def get_academic_thesis_prompt_en(
+        target_words: int, 
+        ref_content_list: List[str], 
+        current_chapter_title: str, 
+        chapter_num: str, 
+        has_user_data: bool = False, 
+        full_outline: str = "",
+        opening_report_data: dict = None,
+        chart_type: str = 'none'
+    ) -> str:
     
-    # 如果前文很少（说明是开头部分），指令要强调“开篇”
-    if not context_summary or len(context_summary) < 50:
-        context_logic_instruction = """
-   - **位置判断**: 当前检测为**论文/章节的起始部分**。
-   - **写作逻辑**: 必须**开篇明义**，直接引入主题，**严禁**使用“承接上文”、“综上所述”、“如前所述”等过渡词。应奠定基调，引出后续内容。
+    # ------------------------------------------------------------------
+    # 1. Section Logic (EN) - Strict Translation of CN Logic
+    # ------------------------------------------------------------------
+    section_rule = ""
+    title_lower = current_chapter_title.lower()
+    
+    # A. Abstract
+    if "abstract" in title_lower:
+        section_rule = """
+**Current Task: Write English Abstract & Keywords**
+**NO Titles**: Do NOT output "### Abstract", start writing the body text directly.
+
+**Logic Structure**:
+1. **Background**: Brief background (approx. 50 words).
+2. **Methodology**: What was done and what methods were used (approx. 100 words).
+3. **Key Findings**: What data or conclusions were obtained (approx. 100 words).
+4. **Contribution**: Theoretical value (approx. 50 words).
+
+**Formatting Requirements**:
+    - **NO** bullet points (1. 2. 3.). Must be a single, coherent paragraph.
+    - End with: **Keywords**: Word1; Word2; Word3; Word4 (3-5 words, separated by semicolons).
 """
-    # 如果是“结论/总结”类章节，指令要强调“收束”
-    elif any(k in section_title for k in ["结论", "总结", "展望", "结语"]):
-        context_logic_instruction = f"""
-   - **位置判断**: 当前为**结论/收尾部分**。
-   - **前文摘要**: "...{context_summary[-300:]}..."
-   - **写作逻辑**: 必须对前文（尤其是摘要中提到的分析）进行**高屋建瓴的总结**，而不是简单的重复。要对全文进行收束，升华主题，并展望未来。
+
+    # B. Background & Significance
+    elif any(k in title_lower for k in ["introduction", "background"]):
+        section_rule = """
+**Current Task: Write Research Background**
+**Content Requirements**:
+1. **Policy/Fact Support**: Must integrate **global trends, national policies, industry reports, or major social events** from the last 3 years.
+2. **Real-World Pain Points**: Address specific contradictions or unresolved issues from a macro (Social) or Industry perspective.
+3. **Data Sense**: Cite (or logically infer) industry data to enhance persuasion.
+4. **Sentence Structure**: Avoid flowery language; every sentence must convey high-density information.
 """
-    # 否则默认为“中间部分”，指令强调“承上启下”
+    elif "significance" in title_lower or "importance" in title_lower:
+        section_rule = """
+**Current Task: Write Research Significance**
+**Dimension Breakdown**:
+1. **Theoretical Significance**: Do NOT say "filled a gap". Must be phrased as "**Enriched the theoretical research from the perspective of...**", "**Expanded the application boundary of...**", or "**Provided new empirical evidence for...**".
+2. **Practical Significance**: Specific guidance for **enterprises, governments, or society** (e.g., "Reduced costs for...", "Improved efficiency of...", "Provided reference for decision-making").
+"""
+
+    # C. Literature Review
+    elif any(k in title_lower for k in ["review", "literature", "related work", "status"]):
+        if ref_content_list:
+            first_ref = ref_content_list[0]
+            other_refs_prompt = "\n".join([f"{{Ref {i+2}}}: {ref}" for i, ref in enumerate(ref_content_list[1:])]) if len(ref_content_list) > 1 else "No further refs"
+            
+            section_rule = f"""
+**Current Task: Write Literature Review**
+**Core Goal**: Convert the provided reference list into a logical academic review.
+**Structure: Total-Part-Total**
+1. **Para 1 (Overview)**: Briefly summarize current research hotspots (approx. 100 words), leading into specific studies.
+2. **Para 2 (Core Review - Part)**:
+   - **First Detail**: Detailed review of **{{Ref 1}}** ({first_ref}) (approx. 200 words). Format: **Author (Year) argues/points out... [REF]**.
+   - **Subsequent Links**: Review subsequent references in order. **MUST use logical connectors** (e.g., "In contrast,", "Furthermore,", "Building on this,") to connect them. **NO simple listing**.
+3. **Para 3 (Summary/Gap - Total)**: Summarize commonalities, point out **limitations or controversies**, and introduce the focus of this study.
+
+**Citation Rules**:
+1. **NO IDs**: Do NOT output "Ref ID" or "Ref 1" in the text.
+2. **Format**: Extract **Author** and **Year**. Format: `Author (Year)`.
+   - *Example*: "Smith (2025) argues that..."
+3. **NO Ambiguity**: Do NOT use "Some scholars" or "A study"; **Name specific authors**.
+4. **Order**: Must follow the list order strictly.
+
+**References to Review**:
+- {{Ref 1}}: {first_ref}
+{other_refs_prompt}
+"""
+        else:
+            section_rule = "**Current Task: Write Literature Review**\nWrite based on general academic knowledge. Maintain Total-Part-Total structure. Cite real classic studies."
+
+    # D. Literature Critique / Gap Analysis
+    elif "critique" in title_lower or "gap" in title_lower or "comment" in title_lower:
+        section_rule = """
+**Current Task: Write Literature Comments (Gap Analysis)**
+**Logic**:
+1. **Summary**: "Through the above literature review, this study finds..."
+2. **Affirmation**: Existing research has achieved rich results in...
+3. **Gap Analysis**: "However, there are still shortages in..." or "Few studies combine X with Y...".
+4. **Positioning**: "Therefore, based on existing research, this paper will focus on...".
+**Requirement**: This is a transitional paragraph (300-400 words). **No specific citations needed**.
+"""
+
+    # E. Research Content (Outline Description)
+    elif "content" in title_lower and "method" not in title_lower:
+        section_rule = """
+**Current Task: Write Research Content Overview**
+**Core Goal**: Elaborate on the research work chapter by chapter following the logical flow (Problem-Analysis-Solution).
+**Structure**: Use **Paragraphs**, **NO Lists**. 5-6 paragraphs recommended.
+
+**Detailed Guide & Template**:
+1. **Para 1 (Overview)**: Summarize the main theme and core logic.
+   - *Example*: "This study focuses on... following the logic of 'Theory-Status-Empirical-Strategy'..."
+2. **Para 2 (Basics - Ch 1-2)**: Cover introduction and theoretical basis.
+   - *Example*: "**Chapter 1** is the introduction... **Chapter 2** defines core concepts and reviews... theories..."
+3. **Para 3 (Status/Problem - Ch 3)**: Focus on status description and problem identification.
+   - *Example*: "**Chapter 3** focuses on the status analysis of... identifying key problems such as..."
+4. **Para 4 (Core Analysis - Ch 4)**: **Focus Point**. Describe models, data, and verification.
+   - *Example*: "**Chapter 4** is the core. It constructs a ... model, uses ... methods to empirically test the relationship between..."
+5. **Para 5 (Strategy/Conclusion - Ch 5-6)**: Solutions and summary.
+   - *Example*: "**Chapter 5** proposes optimization strategies for... **Chapter 6** summarizes the conclusions..."
+"""
+
+    # F. Methodology
+    elif any(k in title_lower for k in ["method", "methodology", "design"]):
+        section_rule = """
+**Current Task: Write Research Methodology**
+**Core Goal**: Clearly explain the specific methods, steps, and applicability. Ensure reproducibility.
+**Structure**: Use **Bullet Points** (1. 2. 3.). Select 2-3 core methods.
+
+**Detailed Guide & Templates**:
+
+1. **Literature Research Method (Mandatory)**:
+   - *Key Points*: Data sources (Databases), keywords, and how they are used.
+   - *Template*: "**1. Literature Research Method**. This study collected literature from authoritative databases like Web of Science/Google Scholar using keywords such as '...'. It systematically reviewed the theoretical basis..."
+
+2. **Empirical Analysis Method (For Quantitative)**:
+   - *Key Points*: Data source, software (SPSS/Stata/Python), and specific analysis (Regression/Correlation).
+   - *Template*: "**2. Empirical Analysis Method**. This paper selected ... as the sample. Using Stata/SPSS software, it constructed a ... model to empirically test the relationship between..."
+
+3. **Case Study Method (For Qualitative/Management)**:
+   - *Key Points*: Reason for selection (Typicality) and analysis logic.
+   - *Template*: "**3. Case Study Method**. This paper selected ... as a representative case. By collecting data/interview materials, it deeply analyzed the practices and problems..."
+
+4. **Questionnaire Survey Method (For Survey)**:
+   - *Key Points*: Design basis, distribution, recovery rate, reliability/validity test.
+   - *Template*: "**4. Questionnaire Survey Method**. Based on the ... scale, a questionnaire was designed and distributed to... A total of ... valid questionnaires were recovered. Reliability and validity tests ensured data quality."
+
+**Key Requirements**:
+- **No Empty Definitions**: Do NOT write "Literature method is defined as...". Write **"How it is done in THIS study"**.
+- **Software & Data**: Mention specific tools (SPSS, Python, etc.) if applicable.
+"""
+
+    # G. Theoretical Basis
+    elif "theory" in title_lower or "concept" in title_lower or "basis" in title_lower:
+        section_rule = """
+**Current Task: Write Concepts and Theoretical Basis**
+**Requirements**:
+1. **Concepts**: Define 2 core keywords.
+2. **Theories**: Select 1-2 classic theories related to the topic (e.g., PEST, 4P, SWOT, TAM, Maslow).
+3. **Relevance**: **Strictly Forbidden** to just pile up definitions. Must explain **how the theory guides this study** (e.g., "This study will analyze ... behavior based on ... theory").
+"""
+
+    # H. Conclusion
+    elif "conclusion" in title_lower:
+        section_rule = """
+**Current Task: Write Conclusion**
+**Structure**:
+1. **Major Findings**: "Through ... methods, this study concludes: ..." (Summarize core points).
+2. **Innovations**: Briefly describe the uniqueness of this paper.
+3. **Limitations & Outlook**: Honestly state limitations in sample/time/method and propose future directions.
+**Tone**: Affirmative, objective. Avoid ambiguity.
+"""
+
+    # I. General Body
     else:
-        context_logic_instruction = f"""
-   - **位置判断**: 当前为**论文中间章节**。
-   - **前文摘要**: "...{context_summary[-1500:]}..."
-   - **写作逻辑**: 必须**紧密承接**上述前文的逻辑流。
-     - 如果前文在分析问题，本段应继续深入或转向对策；
-     - 如果前文是理论，本段应转向应用或实证。
-     - **必须**使用恰当的学术过渡词（如“基于上述分析”、“具体而言”、“与此同时”）来确保文气贯通，避免突兀。
+        section_rule = """
+**Current Task: Write Body Analysis**
+1. **Logic Driven**: The core is the analytical train of thought.
+2. **Deep Argumentation**: Each paragraph must have a Point, Evidence (Data/Theory), and Conclusion.
 """
+
+    # ------------------------------------------------------------------
+    # 2. Citation Instruction (EN)
+    # ------------------------------------------------------------------
+    ref_instruction = ""
+    is_review_chapter = any(k in title_lower for k in ["review", "literature", "related", "status"])
+    
+    if ref_content_list and is_review_chapter:
+        ref_instruction = f"""
+### **Strategy D: Citation Execution**
+This section **MUST** cite the assigned references.
+1. **Format**: When mentioning a point, use specific numbers like `[1]`, `[2]` corresponding to the list order.
+   - *Wrong*: Smith says...[REF]
+   - *Right*: Smith (2023) points out...[1]
+2. **No Placeholders**: **Absolutely Forbidden** to output `[REF]` or `[Reference]`.
+3. **Quantity**: You must insert {len(ref_content_list)} citation markers.
+4. **Connection**: Even if not perfectly relevant, use connectors like "Furthermore, studies from the perspective of... point out" to force a logical loop.
+"""
+    else:
+        ref_instruction = """
+### **Strategy D: Citation Ban**
+**Do NOT use the reference list in this section.**
+1. **Absolutely Forbidden** to use `[REF]`, `[1]` markers.
+2. **Absolutely Forbidden** to use phrases like "Literature [x]" or "Some scholars point out".
+3. Base your arguments entirely on **theoretical deduction**, **user-provided data**, or **general academic knowledge**.
+"""
+
+    # ------------------------------------------------------------------
+    # 3. Word Count Strategy (EN)
+    # ------------------------------------------------------------------
+    min_words = int(target_words * 0.75)
+    max_words = int(target_words * 1.25)
+    word_count_strategy = f"""
+### **Strategy E: Word Count Control**
+1. **Target**: **{target_words} words**.
+2. **Range**: Output must be between **{min_words} ~ {max_words} words**.
+"""
+    if "abstract" in title_lower:
+        word_count_strategy = "Follow standard Abstract length."
+
+    # ------------------------------------------------------------------
+    # 4. Visualization Strategy (EN)
+    # ------------------------------------------------------------------
+    visuals_instruction = ""
+    plot_config = """
+    **Python Code Requirements**:
+        - Must include imports: `import matplotlib.pyplot as plt`, `import seaborn as sns`, `import pandas as pd`, `import numpy as np`.
+        - **English Support**: Labels and Titles must be in English.
+        - **Seaborn Spec (CRITICAL)**: When using `sns.barplot` or others with `palette`, you **MUST** assign `x` variable to `hue` and set `legend=False`.
+          - Wrong: `sns.barplot(x='Year', y='Value', palette='viridis')`
+          - Right: `sns.barplot(x='Year', y='Value', hue='Year', palette='viridis', legend=False)`
+        - **Canvas**: Set size `plt.figure(figsize=(10, 6))` before plotting. No square plots.
+        - **Data**: Data must be defined INSIDE the code (DataFrame). No external file reading.
+        - **Style**: `sns.set_theme(style="whitegrid")`.
+        - **Output**: No `plt.show()` needed at the end.
+        - **Caption**: Output `**Fig {chapter_num}.X Title**` below the code block.
+        - **Silent Output (CRITICAL)**: 
+            1. **Strictly Forbidden** to output step titles outside code!
+            2. **Absolutely Forbidden** to write "Setting style", "Defining data".
+            3. Output format: [Text] -> [Python Code] -> [Text].
+    """
+    
+    table_config = """
+    - **Table Requirements**:
+        - Must use standard Markdown Three-Line Table format.
+        - Data must be precise, headers clear.
+        - **Caption**: Output `**Table {chapter_num}.X Title**` above the table.
+    """
+
+    if chart_type == 'table':
+        visuals_instruction = f"""
+### **Strategy F: Mandatory Table**
+**User explicitly requested a [Table] for this section.**
+1. **Execution**: Extract core metrics from data and draw a Markdown Table.
+2. **No Plots**: **Forbidden** to generate Python code plots.
+{table_config}
+3. **Interaction**: Text must reference "As shown in Table {chapter_num}.X...".
+"""
+    elif chart_type == 'plot':
+        visuals_instruction = f"""
+### **Strategy F: Mandatory Statistical Plot**
+**User explicitly requested a [Plot] for this section.**
+1. **Execution**: Write Python code to plot the data (Line/Bar/Pie).
+2. **No Tables**: **Forbidden** to use Markdown tables for core data.
+{plot_config}
+3. **Interaction**: Text must reference "As shown in Fig {chapter_num}.X...".
+4. **Clean Mode**: Do not explain the code like a tutorial. Just give the code.
+"""
+    else:
+        visuals_instruction = """
+### **Strategy F: Visualization Control**
+**No charts or tables required.** Focus on text argumentation.
+"""
+
+    # ------------------------------------------------------------------
+    # 5. Opening Report Constraints (EN)
+    # ------------------------------------------------------------------
+    report_rules_section = ""
+    if opening_report_data and (opening_report_data.get("title") or opening_report_data.get("review") or opening_report_data.get("outline_content")):
+        r_title = opening_report_data.get("title", "(Unknown Title)")
+        r_review = opening_report_data.get("review", "(No Review)")
+        r_outline = opening_report_data.get("outline_content", "(No Outline)")
+        
+        r_review_snippet = r_review[:2000] 
+        r_outline_snippet = r_outline[:1500]
+
+        report_rules_section = f"""
+### **Strategy I: Opening Report Compliance**
+**User uploaded an Opening Report. Writing MUST strictly follow these constraints:**
+
+1. **Topic Lock**: Writing must strictly adhere to the title **"{r_title}"**. Do not deviate.
+2. **Literature Review (Mandatory Reuse)**:
+   - If this section involves "Status" or "Review", **Do NOT fabricate**.
+   - **Execute**: Expand and polish based on the Opening Report's review skeleton.
+   - **Reference**:
+   ```text
+   {r_review_snippet}
+3. **Path/Outline Dependency**:
+    - Constraint: Must follow the pre-defined research framework.
+    - Reference:{r_outline_snippet}
+""" 
+    else: 
+        report_rules_section = """
+    Strategy I: Opening Report Constraints
+(No opening report detected. Follow general academic logic.) 
+"""
+
     return f"""
-# 角色
-你是一位资深的学术论文评审与修改专家，擅长修正论文逻辑，确保论证严密、主题聚焦。
+# Role
+You are a senior academic thesis reviewer and editing expert, specializing in logic correction and ensuring rigorous argumentation. 
+You master "Academic English Writing Standards" and can mimic human scholar styles. 
+Task: Follow templates strictly, ensure academic norms, NO exaggeration, Rich visualization.
 
-# 核心任务
-你正在对论文 **《{thesis_title}》** 中的 **“{section_title}”** 章节进行重写。
+## Strategy A: Format & Layout
+-   Paragraphs: All paragraphs must be coherent. No Markdown lists (except Methodology).
+-   Punctuation: Use standard English punctuation (half-width).
+-   Numbers: Use Arabic numerals for stats/years.
+-   Citations: Use standard format [1].
 
-# 关键上下文与逻辑约束 (Context)
-1. **宏观一致性 (题目)**: 
-   - 论文题目: 《{thesis_title}》
-   - *红线*: 你重写的所有内容，必须**严格服务于**这个总标题。**严禁**撰写与该主题无关的通用废话。
-   
-2. **微观聚焦 (章节)**: 
-   - 当前章节: “{section_title}”
-   - *红线*: 内容必须精准聚焦于该小节的特定论点。
-     - 如果标题是“现状”，就只写现状，不要写对策；
-     - 如果标题是“原因”，就只写原因，不要写影响。
-     - **严禁越界**去写其他章节的内容。
+## Strategy B: Data & Humility (CRITICAL)
+1. **Data Priority (User Data First)**:
+-   Highest Order: Contextual [User Real Data] is Absolute Truth. You MUST explicitly cite this data (e.g., "According to the provided 2023 financial data..."). Forbidden to ignore user data or fabricate conflicting data.
+-   Requirement: Extract key metrics (growth rate, ratio) into the text.
+2. **Timeframe Constraint (2020-2025)**
+-   Status/Analysis Sections: Strictly Forbidden to use data before 2019 for current status. All external search data/policies must be from 2020-2025.
+-   Exception: History/Background sections.
+3. **No Exaggeration**:
+-   Ban: "Filled a gap", "First of its kind", "Perfect solution".
+-   Use: "Enriched the perspective of...", "Provided empirical reference", "Optimized...".
+4. **File Citations**: Do NOT fabricate names of policies/books. If unsure, describe the content.
 
-3. **上下文连贯性 (Flow)**: {context_logic_instruction}
+## Strategy C: Section-Specific Logic
+{section_rule}
 
-4. **原文基础 (Reference Base)**:
-   - **原文内容**: 
-     ```
-     {original_content[:2000]} 
-     ```
-   - **处理策略**: 
-     - 用户的意图通常是在**原文基础上进行润色、修正或扩充**。
-     - **除非**用户指令明确要求“完全重写”、“推翻重来”，否则请**保留原文的核心观点和数据**，重点优化其表达、逻辑结构和学术规范性。
-     - 如果原文非常简陋，请进行**扩写和深化**。
+## Strategy D: Citation Execution
+{ref_instruction}
 
-5. **学术规范与排版标准化 (Academic Formatting Standards)**：
-    你必须严格遵守以下中文学术出版排版规范，确保输出内容无需二次清洗即可使用：
-    - 标点符号的全角/半角区分：中文语境：正文中必须严格使用全角标点（如：，。；：？！（）“”《》）。
-    (1)错误示例：我们发现,实验数据有误.
-    (2)正确示例：我们发现，实验数据有误。
-    - 英文/数字/公式语境：在数学公式、参考文献的英文部分、以及独立的阿拉伯数字范围内，使用半角标点（如：.,;()[]）。
-      示例：$P < 0.05$；(Smith, 2020)；3.14159。
-    - 数字与计量单位规范：统计与公历：凡是涉及统计数据、公历年代、时间、百分比等，一律使用阿拉伯数字（Times New Roman 风格）。
-      示例：2023年、15.6%、30个样本。
-    - 定性与概数：凡是作为语素构成定型词、成语、概数或描述性词语，使用汉字数字。
-      示例：第一章、三大类、五六个、二元一次方程。
-    - 中西文混排间隙：在中文汉字与阿拉伯数字/英文单词之间，建议保留一个半角空格的视觉间隙（除非紧跟标点符号），以提升阅读舒适度。
-      示例：使用 Python 语言编写；耗时 20 分钟。
-    - 引号与书名号层级：引用层级：使用双引号 “” 作为第一层级引用；若引文中还包含引文，使用单引号 ‘’。特定对象标注：书籍、篇名、报纸、法律法规、文章题目：必须使用书名号 《》。
-      示例：根据《民法典》规定；参见《自然》（Nature）杂志。
+## Strategy E: Word Count Control
+{word_count_strategy} 
+Expansion Tip: If word count is low, expand on definitions, add "examples", "comparative analysis", or "theoretical support". Do NOT repeat fluff.
 
-{visuals_section}
+## Strategy F: Visualization (Python & Tables)
+{visuals_instruction}
+
+## Strategy G: Structure & Boundary Control (CRITICAL - FORBIDDEN)
+1. No Self-Made Headers: Output MUST NOT contain any Markdown headers (#, ##, ###).
+    -   Wrong: ### 1.1 Background Analysis
+    -   Right: Start writing the body paragraph of background analysis directly.
+2. No Crossover: Strictly Forbidden to write content for the next chapter. Focus ONLY on "{current_chapter_title}".
+3. No Bullet Points: Unless it is "Methodology", do not use 1. 2. or *. Use logical connectors like "Notably,", "Meanwhile,", "Further analysis shows...".
+4. No Meta-Tags:
+    -   Absolutely Forbidden to output "(indent)", "(continued)", "(insert here)".
+    -   No ellipses (...) at start of paragraphs.
+
+## Strategy H: Global Structure
+To ensure logical coherence, refer to the Full Outline to locate your position. 
+{full_outline}
+
+## Strategy I: Opening Report Compliance
+{report_rules_section}
+
+Please observe the above strategies strictly and start writing. """
 
 
-# 用户修改指令 (最高优先级 - 必须满足)
-{user_instruction}
-
-# 严格排版与写作规范
-1. **排版格式 (Machine Readable)**:
-   - **首行缩进**: 输出的**每一个自然段**，开头必须包含**两个全角空格** (　　)。
-   - **段间距**: 段落之间使用**单换行** (`\\n`)，**严禁**使用空行 (`\\n\\n`)。
-   - **纯净输出**: **严禁**输出章节标题（如 "### {section_title}"），**严禁**包含“好的”、“根据要求”等对话内容。只输出正文。
-2. **数据使用**:
-   - 参考数据: {custom_data}...
-   - 如果用户提供了数据，请优先使用并进行分析；如果没有，请基于通用学术逻辑撰写。
-
-请开始重写，直接输出正文，注意格式排版。
-"""
-
-def get_academic_thesis_prompt(
+def get_academic_thesis_prompt_cn(
         target_words: int, 
         ref_content_list: List[str], 
         current_chapter_title: str, 
@@ -530,6 +767,151 @@ def get_academic_thesis_prompt(
 {report_rules_section}
 
 请严格遵守以上策略及要求，并开始写作。
+"""
+
+def get_academic_thesis_prompt(
+        target_words: int, 
+        ref_content_list: List[str], 
+        current_chapter_title: str, 
+        chapter_num: str, 
+        has_user_data: bool = False, 
+        full_outline: str = "",
+        opening_report_data: dict = None,
+        chart_type: str = 'none'
+    ) -> str:
+    
+    import re
+    # 语言检测：如果标题中包含中文字符，则使用中文 Prompt，否则使用英文 Prompt
+    # 这是一个简单但有效的判断策略
+    is_chinese_mode = bool(re.search(r'[\u4e00-\u9fa5]', current_chapter_title))
+    
+    if is_chinese_mode:
+        return get_academic_thesis_prompt_cn(
+            target_words, ref_content_list, current_chapter_title, chapter_num, 
+            has_user_data, full_outline, opening_report_data, chart_type
+        )
+    else:
+        return get_academic_thesis_prompt_en(
+            target_words, ref_content_list, current_chapter_title, chapter_num, 
+            has_user_data, full_outline, opening_report_data, chart_type
+        )
+
+def get_rewrite_prompt(thesis_title: str, section_title: str, user_instruction: str, context_summary: str, custom_data: str, original_content: str, chapter_num: str) -> str:
+    # 1. 动态生成上下文指令
+    context_logic_instruction = ""
+    trigger_keywords = ["绘图", "画图", "统计图", "图表", "重绘", "绘制", "三线表", "可视化", "plot", "chart", "数据图"]
+    should_trigger_vis = any(k in user_instruction for k in trigger_keywords)
+    visuals_section = ""
+    if should_trigger_vis:
+        # 只有检测到关键词，才注入详细的绘图规范
+        visuals_section = f"""
+6. **可视化响应（Visualization Strategy - ACTIVATED）**：
+    - **执行动作**：用户指令中包含绘图要求。请根据本节论述的数据，编写 Python 代码绘制最合适的统计图，或者绘制三线表。
+      (1)**Python代码要求**:
+        1.必须包含完整导入: `import matplotlib.pyplot as plt`, `import seaborn as sns`, `import pandas as pd`, `import numpy as np`。
+        2.**中文支持(CRITICAL)**: 必须包含 `plt.rcParams['font.sans-serif'] = ['SimHei']` 和 `plt.rcParams['axes.unicode_minus'] = False`。
+        3.**Seaborn规范(CRITICAL)**: 在使用 `sns.barplot` 或其他带 `palette` 参数的绘图函数时，**必须**将 `x` 轴变量赋值给 `hue` 参数，并设置 `legend=False`。
+        4.**画布设置(CRITICAL)**: 必须在绘图前设置画布大小为横向长图：`plt.figure(figsize=(10, 6))`。严禁生成正方形图片。
+        5.**数据定义**: 数据必须在代码内完整定义(DataFrame)，严禁读取外部文件。
+        6.**风格**: 使用 `sns.set_theme(style="whitegrid")`。
+        7.**输出**: 代码最后不需要 `plt.show()`。
+        8.**图名**: 代码块下方必须输出 `**图{chapter_num}.X 图名**`。
+       (2)**表格要求**:
+        1.必须使用标准 Markdown 三线表格式。
+        2.数据必须精确，表头清晰。
+        3.**表名**: 表格上方必须输出 `**表{chapter_num}.X 表名**`。
+    - **静默输出 (CRITICAL)**: 
+            1. **严禁**在代码块外部输出任何步骤标题！
+            2. **绝对禁止**出现以下文字：“设置绘图风格”、“定义数据”、“创建画布”、“绘制图形”、“添加标签”。
+            3. 你的输出格式必须是：[正文上一段] -> [Python代码块] -> [正文下一段]。
+"""
+    
+    # 如果前文很少（说明是开头部分），指令要强调“开篇”
+    if not context_summary or len(context_summary) < 50:
+        context_logic_instruction = """
+   - **位置判断**: 当前检测为**论文/章节的起始部分**。
+   - **写作逻辑**: 必须**开篇明义**，直接引入主题，**严禁**使用“承接上文”、“综上所述”、“如前所述”等过渡词。应奠定基调，引出后续内容。
+"""
+    # 如果是“结论/总结”类章节，指令要强调“收束”
+    elif any(k in section_title for k in ["结论", "总结", "展望", "结语"]):
+        context_logic_instruction = f"""
+   - **位置判断**: 当前为**结论/收尾部分**。
+   - **前文摘要**: "...{context_summary[-300:]}..."
+   - **写作逻辑**: 必须对前文（尤其是摘要中提到的分析）进行**高屋建瓴的总结**，而不是简单的重复。要对全文进行收束，升华主题，并展望未来。
+"""
+    # 否则默认为“中间部分”，指令强调“承上启下”
+    else:
+        context_logic_instruction = f"""
+   - **位置判断**: 当前为**论文中间章节**。
+   - **前文摘要**: "...{context_summary[-1500:]}..."
+   - **写作逻辑**: 必须**紧密承接**上述前文的逻辑流。
+     - 如果前文在分析问题，本段应继续深入或转向对策；
+     - 如果前文是理论，本段应转向应用或实证。
+     - **必须**使用恰当的学术过渡词（如“基于上述分析”、“具体而言”、“与此同时”）来确保文气贯通，避免突兀。
+"""
+    return f"""
+# 角色
+你是一位资深的学术论文评审与修改专家，擅长修正论文逻辑，确保论证严密、主题聚焦。
+
+# 核心任务
+你正在对论文 **《{thesis_title}》** 中的 **“{section_title}”** 章节进行重写。
+
+# 关键上下文与逻辑约束 (Context)
+1. **宏观一致性 (题目)**: 
+   - 论文题目: 《{thesis_title}》
+   - *红线*: 你重写的所有内容，必须**严格服务于**这个总标题。**严禁**撰写与该主题无关的通用废话。
+   
+2. **微观聚焦 (章节)**: 
+   - 当前章节: “{section_title}”
+   - *红线*: 内容必须精准聚焦于该小节的特定论点。
+     - 如果标题是“现状”，就只写现状，不要写对策；
+     - 如果标题是“原因”，就只写原因，不要写影响。
+     - **严禁越界**去写其他章节的内容。
+
+3. **上下文连贯性 (Flow)**: {context_logic_instruction}
+
+4. **原文基础 (Reference Base)**:
+   - **原文内容**: 
+     ```
+     {original_content[:2000]} 
+     ```
+   - **处理策略**: 
+     - 用户的意图通常是在**原文基础上进行润色、修正或扩充**。
+     - **除非**用户指令明确要求“完全重写”、“推翻重来”，否则请**保留原文的核心观点和数据**，重点优化其表达、逻辑结构和学术规范性。
+     - 如果原文非常简陋，请进行**扩写和深化**。
+
+5. **学术规范与排版标准化 (Academic Formatting Standards)**：
+    你必须严格遵守以下中文学术出版排版规范，确保输出内容无需二次清洗即可使用：
+    - 标点符号的全角/半角区分：中文语境：正文中必须严格使用全角标点（如：，。；：？！（）“”《》）。
+    (1)错误示例：我们发现,实验数据有误.
+    (2)正确示例：我们发现，实验数据有误。
+    - 英文/数字/公式语境：在数学公式、参考文献的英文部分、以及独立的阿拉伯数字范围内，使用半角标点（如：.,;()[]）。
+      示例：$P < 0.05$；(Smith, 2020)；3.14159。
+    - 数字与计量单位规范：统计与公历：凡是涉及统计数据、公历年代、时间、百分比等，一律使用阿拉伯数字（Times New Roman 风格）。
+      示例：2023年、15.6%、30个样本。
+    - 定性与概数：凡是作为语素构成定型词、成语、概数或描述性词语，使用汉字数字。
+      示例：第一章、三大类、五六个、二元一次方程。
+    - 中西文混排间隙：在中文汉字与阿拉伯数字/英文单词之间，建议保留一个半角空格的视觉间隙（除非紧跟标点符号），以提升阅读舒适度。
+      示例：使用 Python 语言编写；耗时 20 分钟。
+    - 引号与书名号层级：引用层级：使用双引号 “” 作为第一层级引用；若引文中还包含引文，使用单引号 ‘’。特定对象标注：书籍、篇名、报纸、法律法规、文章题目：必须使用书名号 《》。
+      示例：根据《民法典》规定；参见《自然》（Nature）杂志。
+
+{visuals_section}
+
+
+# 用户修改指令 (最高优先级 - 必须满足)
+{user_instruction}
+
+# 严格排版与写作规范
+1. **排版格式 (Machine Readable)**:
+   - **首行缩进**: 输出的**每一个自然段**，开头必须包含**两个全角空格** (　　)。
+   - **段间距**: 段落之间使用**单换行** (`\\n`)，**严禁**使用空行 (`\\n\\n`)。
+   - **纯净输出**: **严禁**输出章节标题（如 "### {section_title}"），**严禁**包含“好的”、“根据要求”等对话内容。只输出正文。
+2. **数据使用**:
+   - 参考数据: {custom_data}...
+   - 如果用户提供了数据，请优先使用并进行分析；如果没有，请基于通用学术逻辑撰写。
+
+请开始重写，直接输出正文，注意格式排版。
 """
 
 def get_word_distribution_prompt(total_words: int, outline_text: str) -> str:

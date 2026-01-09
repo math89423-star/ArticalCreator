@@ -369,3 +369,113 @@ class MarkdownToDocx:
         doc.save(out_stream)
         out_stream.seek(0)
         return out_stream
+    
+class TextReportParser:
+    @staticmethod
+    def parse(text: str) -> dict:
+        """
+        解析开题报告文本，智能提取：题目、大纲、参考文献、文献综述
+        [增强版] 支持英文大纲 (Chapter X, 1.1, Abstract...)
+        """
+        data = {
+            "title": "",
+            "outline_content": "",
+            "cn_refs": [],
+            "en_refs": [],
+            "review": ""
+        }
+        
+        if not text:
+            return data
+
+        # ==========================================
+        # 1. 提取题目
+        # ==========================================
+        # 策略A: 显式标记 "题目：" or "Title:"
+        title_match = re.search(r'(?:论文)?(?:题目|Title)[:：]\s*(.*)', text, re.IGNORECASE)
+        if title_match:
+            data["title"] = title_match.group(1).strip()
+        else:
+            # 策略B: 取第一行非空文本
+            lines = [l.strip() for l in text.split('\n') if l.strip()]
+            if lines and len(lines[0]) < 100:
+                data["title"] = lines[0]
+
+        # ==========================================
+        # 2. 提取参考文献 (先提取并移除，防止干扰大纲解析)
+        # ==========================================
+        # 查找“参考文献”或 "References"
+        ref_split = re.split(r'^\s*(?:参考文献|References)[:：]?\s*$', text, flags=re.MULTILINE | re.IGNORECASE)
+        
+        main_body = text 
+        
+        if len(ref_split) > 1:
+            ref_text = ref_split[-1].strip()
+            main_body = ref_split[0] 
+            
+            refs = [line.strip() for line in ref_text.split('\n') if line.strip()]
+            for ref in refs:
+                # 清洗序号
+                clean_ref = re.sub(r'^(\[\d+\]|\d+\.|（\d+）|\(\d+\))\s*', '', ref)
+                if len(clean_ref) < 5: continue
+                
+                # 区分中英文
+                if re.search(r'[\u4e00-\u9fa5]', clean_ref):
+                    data["cn_refs"].append(clean_ref)
+                else:
+                    data["en_refs"].append(clean_ref)
+
+        # ==========================================
+        # 3. 提取文献综述 (Review)
+        # ==========================================
+        # 支持中文和英文关键词
+        review_keywords = ["文献综述", "研究现状", "国内外研究", "Literature Review", "Related Work"]
+        stop_keywords = r'(?:研究内容|研究方法|论文提纲|论文目录|第[一二三]章|3\.|^3\s|Chapter|Methodology|Research Content)'
+        
+        for kw in review_keywords:
+            pattern = rf'{kw}[:：]?\s*([\s\S]*?)(?={stop_keywords}|$)'
+            match = re.search(pattern, main_body, re.IGNORECASE | re.MULTILINE)
+            if match:
+                review_content = match.group(1).strip()
+                if len(review_content) > 50:
+                    data["review"] = review_content
+                    break
+
+        # ==========================================
+        # 4. 提取大纲/目录 (核心修改部分)
+        # ==========================================
+        
+        # 尝试定位目录区域
+        outline_match = re.search(r'(?:目录|提纲|章节安排|结构安排|Table of Contents|Outline)[:：]?\s*([\s\S]*)', main_body, re.MULTILINE | re.IGNORECASE)
+        source_for_outline = outline_match.group(1) if outline_match else main_body
+        
+        outline_lines = []
+        raw_lines = source_for_outline.split('\n')
+        
+        # 定义大纲行的正则匹配规则
+        outline_patterns = [
+            r'^Chapter\s+\d+',             # Chapter 1...
+            r'^Section\s+\d+',             # Section 1...
+            r'^Part\s+\d+',                # Part 1...
+            r'^第[一二三四五六七八九十0-9]+章', # 第一章...
+            r'^\d+(\.\d+)*\s',             # 1.1 ... (注意末尾要有空格，避免匹配年份)
+            r'^\d+\.\s',                   # 1. ...
+            r'^[一二三四五六]+、',           # 一、...
+            # 英文特定关键词
+            r'^(?:Abstract|Introduction|Literature Review|Methodology|Results|Discussion|Conclusion|References|Appendix)',
+            # 中文特定关键词
+            r'^(?:摘要|绪论|结论|参考文献|致谢|附录)'
+        ]
+        
+        combined_pattern = '|'.join(outline_patterns)
+        
+        for line in raw_lines:
+            line = line.strip()
+            # 排除过长的段落，只保留看起来像标题的行
+            if len(line) < 100 and re.match(combined_pattern, line, re.IGNORECASE):
+                outline_lines.append(line)
+        
+        if outline_lines:
+            data["outline_content"] = "\n".join(outline_lines)
+
+        return data

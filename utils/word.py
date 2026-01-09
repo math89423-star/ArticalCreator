@@ -69,7 +69,7 @@ def register_custom_font():
     print("[Font] ❌ 警告: 未找到任何中文字体，中文将无法显示！请上传 SimHei.ttf 到项目目录。")
     return 'sans-serif' # 最后的兜底
 
-# 初始化字体 (脚本加载时自动执行)
+# 初始化字体
 CURRENT_FONT_NAME = register_custom_font()
 
 class TextCleaner:
@@ -168,23 +168,18 @@ class MarkdownToDocx:
             code_str = re.sub(r'^```python', '', code_str.strip(), flags=re.MULTILINE|re.IGNORECASE)
             code_str = re.sub(r'^```', '', code_str.strip(), flags=re.MULTILINE)
             code_str = code_str.replace('\u3000', ' ').replace('\u00A0', ' ').replace('\u200b', '')
-            
             # 清洗配置
             code_str = re.sub(r"plt\.rcParams\[.*?\]\s*=\s*.*", "", code_str)
             code_str = re.sub(r"sns\.set_theme\(.*?\)", "", code_str) 
             code_str = re.sub(r"sns\.set\(.*?\)", "", code_str)
-
             plt.close('all') 
             plt.clf()
-            
             # 强制应用字体配置
             sns.set_theme(style="whitegrid")
             plt.rcParams['font.sans-serif'] = [CURRENT_FONT_NAME]
             plt.rcParams['axes.unicode_minus'] = False
-
             local_vars = {'plt': plt, 'sns': sns, 'pd': pd, 'np': np}
             exec(code_str, {}, local_vars)
-            
             buf = io.BytesIO()
             plt.tight_layout()
             plt.savefig(buf, format='png', dpi=300, bbox_inches='tight') 
@@ -336,7 +331,6 @@ class MarkdownToDocx:
             if line:
                 clean_line = line.replace('**', '').strip() 
                 line = TextCleaner.correct_punctuation(line)
-                
                 is_caption = re.match(r'^(图|表)\s*\d+[\.\-]\d+', clean_line) or re.match(r'^(图|表)\s*\d+', clean_line)
                 p = doc.add_paragraph()
                 if is_caption:
@@ -346,7 +340,7 @@ class MarkdownToDocx:
                     p.paragraph_format.space_after = Pt(6)
                 else:
                     p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
-                    # [关键修改] 恢复 Word 原生首行缩进 (24pt ≈ 2字符)
+                    # 恢复 Word 原生首行缩进 (24pt ≈ 2字符)
                     # 替代了之前的全角空格方案
                     p.paragraph_format.first_line_indent = Pt(24) 
                     
@@ -375,7 +369,7 @@ class TextReportParser:
     def parse(text: str) -> dict:
         """
         解析开题报告文本，智能提取：题目、大纲、参考文献、文献综述
-        [增强版] 支持英文大纲 (Chapter X, 1.1, Abstract...)
+        支持英文大纲 (Chapter X, 1.1, Abstract...)
         """
         data = {
             "title": "",
@@ -384,13 +378,9 @@ class TextReportParser:
             "en_refs": [],
             "review": ""
         }
-        
         if not text:
             return data
-
-        # ==========================================
         # 1. 提取题目
-        # ==========================================
         # 策略A: 显式标记 "题目：" or "Title:"
         title_match = re.search(r'(?:论文)?(?:题目|Title)[:：]\s*(.*)', text, re.IGNORECASE)
         if title_match:
@@ -400,19 +390,13 @@ class TextReportParser:
             lines = [l.strip() for l in text.split('\n') if l.strip()]
             if lines and len(lines[0]) < 100:
                 data["title"] = lines[0]
-
-        # ==========================================
         # 2. 提取参考文献 (先提取并移除，防止干扰大纲解析)
-        # ==========================================
         # 查找“参考文献”或 "References"
         ref_split = re.split(r'^\s*(?:参考文献|References)[:：]?\s*$', text, flags=re.MULTILINE | re.IGNORECASE)
-        
         main_body = text 
-        
         if len(ref_split) > 1:
             ref_text = ref_split[-1].strip()
             main_body = ref_split[0] 
-            
             refs = [line.strip() for line in ref_text.split('\n') if line.strip()]
             for ref in refs:
                 # 清洗序号
@@ -424,10 +408,7 @@ class TextReportParser:
                     data["cn_refs"].append(clean_ref)
                 else:
                     data["en_refs"].append(clean_ref)
-
-        # ==========================================
         # 3. 提取文献综述 (Review)
-        # ==========================================
         # 支持中文和英文关键词
         review_keywords = ["文献综述", "研究现状", "国内外研究", "Literature Review", "Related Work"]
         stop_keywords = r'(?:研究内容|研究方法|论文提纲|论文目录|第[一二三]章|3\.|^3\s|Chapter|Methodology|Research Content)'
@@ -440,18 +421,13 @@ class TextReportParser:
                 if len(review_content) > 50:
                     data["review"] = review_content
                     break
-
-        # ==========================================
-        # 4. 提取大纲/目录 (核心修改部分)
-        # ==========================================
-        
+        # 4. 提取大纲/目录 
         # 尝试定位目录区域
         outline_match = re.search(r'(?:目录|提纲|章节安排|结构安排|Table of Contents|Outline)[:：]?\s*([\s\S]*)', main_body, re.MULTILINE | re.IGNORECASE)
         source_for_outline = outline_match.group(1) if outline_match else main_body
         
         outline_lines = []
         raw_lines = source_for_outline.split('\n')
-        
         # 定义大纲行的正则匹配规则
         outline_patterns = [
             r'^Chapter\s+\d+',             # Chapter 1...
@@ -466,16 +442,12 @@ class TextReportParser:
             # 中文特定关键词
             r'^(?:摘要|绪论|结论|参考文献|致谢|附录)'
         ]
-        
         combined_pattern = '|'.join(outline_patterns)
-        
         for line in raw_lines:
             line = line.strip()
             # 排除过长的段落，只保留看起来像标题的行
             if len(line) < 100 and re.match(combined_pattern, line, re.IGNORECASE):
                 outline_lines.append(line)
-        
         if outline_lines:
             data["outline_content"] = "\n".join(outline_lines)
-
         return data

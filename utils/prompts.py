@@ -224,10 +224,11 @@ This section **MUST** cite the assigned references.
         - **Seaborn Spec (CRITICAL)**: When using `sns.barplot` or others with `palette`, you **MUST** assign `x` variable to `hue` and set `legend=False`.
           - Wrong: `sns.barplot(x='Year', y='Value', palette='viridis')`
           - Right: `sns.barplot(x='Year', y='Value', hue='Year', palette='viridis', legend=False)`
-        - **Canvas**: Set size `plt.figure(figsize=(10, 6))` before plotting. No square plots.
+        - **Canvas Setup (CRITICAL)**: **You MUST use `fig, ax = plt.subplots(figsize=(10, 6))` to create the plot**. Do NOT use `plt.figure` directly.
+        - **Plotting Logic**: All plot functions **MUST** specify `ax=ax` (e.g., `sns.lineplot(..., ax=ax)`). Use `ax.set_title()`, `ax.set_xlabel()` for labels. Do NOT use `plt.title()`.
         - **Data**: Data must be defined INSIDE the code (DataFrame). No external file reading.
         - **Style**: `sns.set_theme(style="whitegrid")`.
-        - **Output**: No `plt.show()` needed at the end.
+        - **Output**: **Do NOT** include `plt.show()` at the end.
         - **Caption**: Output `**Fig {chapter_num}.X Title**` below the code block.
         - **Silent Output (CRITICAL)**: 
             1. **Strictly Forbidden** to output step titles outside code!
@@ -355,7 +356,6 @@ To ensure logical coherence, refer to the Full Outline to locate your position.
 {report_rules_section}
 
 Please observe the above strategies strictly and start writing. """
-
 
 def get_academic_thesis_prompt_cn(
         target_words: int, 
@@ -616,11 +616,11 @@ def get_academic_thesis_prompt_cn(
         - **Seaborn规范(CRITICAL)**: 在使用 `sns.barplot` 或其他带 `palette` 参数的绘图函数时，**必须**将 `x` 轴变量赋值给 `hue` 参数，并设置 `legend=False`。
           - 错误示例: `sns.barplot(x='Year', y='Value', palette='viridis')`
           - 正确示例: `sns.barplot(x='Year', y='Value', hue='Year', palette='viridis', legend=False)`
-        - **画布设置(CRITICAL)**: 必须在绘图前设置画布大小为横向长图：`plt.figure(figsize=(10, 6))`。严禁生成正方形图片。
-        - **绘图逻辑**: 直接使用 `plt.figure` 创建画布，然后用 `sns.lineplot/barplot` 绘图。**不要使用 subplots，不要使用 ax1/ax2 等复杂对象，直接 plt.xxx 即可**。
+        - **画布设置(CRITICAL)**: **必须使用 `fig, ax = plt.subplots(figsize=(10, 6))` 创建画布**。严禁直接使用 `plt.figure`，也严禁不定义 ax 直接绘图。
+        - **绘图逻辑**: 所有绘图函数**必须**指定 `ax=ax` (例如 `sns.lineplot(..., ax=ax)`)。标题和标签设置必须使用 `ax.set_title()`, `ax.set_xlabel()` 等基于ax的方法，**严禁**使用 `plt.title()`。
         - **数据定义**: 数据必须在代码内完整定义(DataFrame)，严禁读取外部文件。
-        - **风格**: 使用 `sns.set_theme(style="whitegrid")`。
-        - **输出**: 代码最后不需要 `plt.show()`。
+        - **风格**: 使用 `sns.set_theme(style="whitegrid", font='SimHei')`。
+        - **输出**: 代码最后**严禁**包含 `plt.show()`。
         - **图名**: 代码块下方必须输出 `**图{chapter_num}.X 图名**`。
         - **静默输出 (CRITICAL)**: 
             1. **严禁**在代码块外部输出任何步骤标题！
@@ -807,15 +807,16 @@ def get_rewrite_prompt(thesis_title: str, section_title: str, user_instruction: 
         visuals_section = f"""
 6. **可视化响应（Visualization Strategy - ACTIVATED）**：
     - **执行动作**：用户指令中包含绘图要求。请根据本节论述的数据，编写 Python 代码绘制最合适的统计图，或者绘制三线表。
-      (1)**Python代码要求**:
+    (1)**Python代码要求**:
         1.必须包含完整导入: `import matplotlib.pyplot as plt`, `import seaborn as sns`, `import pandas as pd`, `import numpy as np`。
         2.**中文支持(CRITICAL)**: 必须包含 `plt.rcParams['font.sans-serif'] = ['SimHei']` 和 `plt.rcParams['axes.unicode_minus'] = False`。
         3.**Seaborn规范(CRITICAL)**: 在使用 `sns.barplot` 或其他带 `palette` 参数的绘图函数时，**必须**将 `x` 轴变量赋值给 `hue` 参数，并设置 `legend=False`。
-        4.**画布设置(CRITICAL)**: 必须在绘图前设置画布大小为横向长图：`plt.figure(figsize=(10, 6))`。严禁生成正方形图片。
-        5.**数据定义**: 数据必须在代码内完整定义(DataFrame)，严禁读取外部文件。
-        6.**风格**: 使用 `sns.set_theme(style="whitegrid")`。
-        7.**输出**: 代码最后不需要 `plt.show()`。
-        8.**图名**: 代码块下方必须输出 `**图{chapter_num}.X 图名**`。
+        4.**画布设置(CRITICAL)**: **必须使用 `fig, ax = plt.subplots(figsize=(10, 6))` 创建画布**。严禁直接使用 `plt.figure`。
+        5.**绘图逻辑**: 所有绘图函数**必须**指定 `ax=ax` (例如 `sns.lineplot(..., ax=ax)`)。标题和标签设置必须使用 `ax.set_title()`, `ax.set_xlabel()` 等基于ax的方法，**严禁**使用 `plt.title()`。
+        6.**数据定义**: 数据必须在代码内完整定义(DataFrame)，严禁读取外部文件。
+        7.**风格**: 使用 `sns.set_theme(style="whitegrid", font='SimHei')`。
+        8.**输出**: 代码最后**严禁**包含 `plt.show()`。
+        9.**图名**: 代码块下方必须输出 `**图{chapter_num}.X 图名**`。
        (2)**表格要求**:
         1.必须使用标准 Markdown 三线表格式。
         2.数据必须精确，表头清晰。

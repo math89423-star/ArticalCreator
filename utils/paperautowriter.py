@@ -11,7 +11,6 @@ from .word import TextCleaner
 from .prompts import get_rewrite_prompt, get_word_distribution_prompt, get_academic_thesis_prompt
 from .word import MarkdownToDocx
 
-
 class PaperAutoWriter:
     def __init__(self, api_key: str, base_url: str, model: str):
         self.api_key = api_key
@@ -94,14 +93,21 @@ class PaperAutoWriter:
         return '\n\n'.join(lines)
 
     def _refine_content(self, raw_content: str, target: int, sec_title: str, sys_prompt: str, user_prompt: str) -> Generator[str, None, str]:
+        # 计算纯文本长度（排除代码块）
         content_no_code = re.sub(r'```[\s\S]*?```', '', raw_content)
         current_len = len(re.sub(r'\s', '', content_no_code))
-        if target < 300: return raw_content
-        return raw_content
+        # 如果目标字数很小，或者当前字数已经达标（例如达到目标的 60%），就不处理
+        if target < 300 or current_len >= target * 0.6: 
+            return raw_content
+        # 构建扩写指令
+        expand_prompt = user_prompt + f"\n\n【系统检测】当前字数仅 {current_len} 字，远低于目标 {target} 字。请在保持原有观点的基础上，大幅扩充细节、增加论据、展开理论分析，确保字数达标。"
+        # 再次调用 LLM
+        refined_content = self._call_llm(sys_prompt, expand_prompt)
+        return refined_content
 
     def _fix_markdown_table_format(self, text):
         """
-        [V18.0] 强力修复表格格式
+        强力修复表格格式
         1. 识别表格行，强制去除缩进 (防止被当做代码块)
         2. 确保表格与上方文本之间有空行 (Markdown 标准)
         """
@@ -112,19 +118,15 @@ class PaperAutoWriter:
         for line in lines:
             # 兼容全角空格的去除
             stripped = line.strip().replace('\u3000', '')
-            
             # 判定是否为表格行 (以 | 开头并结尾)
             # 宽松匹配：只要去空后以 | 开头且包含第二个 | 即可
             is_table_row = stripped.startswith('|') and stripped.count('|') >= 2
-            
             if is_table_row:
                 if not in_table:
-                    # [进入表格] 
                     # 检查上一行是否为空，如果不是，插入空行
                     if new_lines and new_lines[-1].strip() != '':
                         new_lines.append('') 
                     in_table = True
-                
                 # 写入去缩进后的行
                 new_lines.append(stripped)
             else:
@@ -134,7 +136,6 @@ class PaperAutoWriter:
                     if stripped != '':
                         new_lines.append('')
                     in_table = False
-                
                 # 非表格行保持原样 (保留原有的缩进)
                 new_lines.append(line)
         return '\n'.join(new_lines)
@@ -209,12 +210,10 @@ class PaperAutoWriter:
         """辅助方法：构建 Prompt 并调用 LLM 生成原始内容"""
         logs = []
         chapter_num = self._extract_chapter_num(sec_title)
-        
-        # 1. 自动检测语言模式 (用于决定 User Prompt 的语言)
+        # 自动检测语言模式 (用于决定 User Prompt 的语言)
         import re
         is_chinese_mode = bool(re.search(r'[\u4e00-\u9fa5]', sec_title))
-        
-        # 2. 构建 System Prompt (内部会自动分发 CN/EN)
+        # 构建 System Prompt (内部会自动分发 CN/EN)
         sys_prompt = get_academic_thesis_prompt(
             target, 
             target_ref_list, 
@@ -224,29 +223,23 @@ class PaperAutoWriter:
             full_outline=full_outline_str,
             chart_type=chart_type
         )
-        
-        # 3. 构建 User Prompt (双语适配)
+        # 构建 User Prompt 
         user_prompt = ""
         if is_chinese_mode:
             # 中文指令
             user_prompt = f"题目：{title}\n章节：{sec_title}\n前文摘要：{context_summary}\n【重要约束】目标字数：{target}字\n{facts_context}"
-            
             if extra_instructions and len(extra_instructions.strip()) > 0:
                 user_prompt += f"\n\n【用户额外具体需求 (最高优先级)】\n{extra_instructions}\n"
         else:
             # 英文指令 (Strict Translation)
             user_prompt = f"Thesis Title: {title}\nChapter: {sec_title}\nContext Summary: {context_summary}\n[Constraint] Target Word Count: {target}\n{facts_context}"
-            
             if extra_instructions and len(extra_instructions.strip()) > 0:
                 user_prompt += f"\n\n[User Extra Instructions (High Priority)]\n{extra_instructions}\n"
-
-        # 4. 调用 LLM
+        # 调用 LLM
         content = self._call_llm_with_client(client, sys_prompt, user_prompt)
-
-        # 5. 字数扩写检查 (双语适配)
+        # 字数扩写检查 (双语适配)
         content_no_code = re.sub(r'```[\s\S]*?```', '', content)
         current_len = len(re.sub(r'\s', '', content_no_code))
-        
         # 英文单词通常比汉字多，所以英文模式下字数阈值可以适当调整，或者按字符数估算
         # 这里简化处理，逻辑保持一致
         if "abstract" not in sec_title.lower() and "摘要" not in sec_title and target > 300 and current_len < target * 0.5:

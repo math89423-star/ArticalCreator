@@ -200,7 +200,7 @@ class PaperAutoWriter:
             raw_ref_text = f"{ref_domestic}\n{ref_foreign}"
 
         if raw_ref_text:
-            target_ref_list = [line.strip() for line in raw_ref_text.split('\n') if line.strip()][:8]
+            target_ref_list = [line.strip() for line in raw_ref_text.split('\n') if line.strip()]
             
         return target_ref_list, logs
 

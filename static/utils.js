@@ -301,115 +301,175 @@ window.smartDistributeWords = async function() {
 };
 
 window.renderConfigArea = function() {
-    const container = document.getElementById('chapterConfigArea');
-    container.innerHTML = '';
+    const configArea = document.getElementById('chapterConfigArea'); 
+    if (!configArea) return;
+    
+    configArea.innerHTML = '';
     let globalTotal = 0;
 
+    if (!parsedStructure || parsedStructure.length === 0) {
+        configArea.innerHTML = `
+            <div class="text-center text-muted py-5 my-5 border rounded bg-light">
+                <i class="bi bi-file-earmark-text display-4 mb-3 d-block"></i>
+                <p>请在上方粘贴开题报告或输入大纲进行解析</p>
+            </div>`;
+        return;
+    }
+
     parsedStructure.forEach((group, gIdx) => {
+        // --- 统计本章字数 ---
         let chapterTotalWords = 0;
-        group.children.forEach(c => chapterTotalWords += (c.words || 0));
+        group.children.forEach(c => chapterTotalWords += parseInt(c.words || 0));
         globalTotal += chapterTotalWords;
 
+        // --- 渲染章卡片 ---
         const card = document.createElement('div');
-        card.className = 'chapter-card';
+        card.className = 'card mb-3 shadow-sm border-0'; // 使用 Bootstrap card 样式
+        
         card.innerHTML = `
-            <div class="chapter-header py-2">
-                <div class="d-flex align-items-center" style="width: 35%;">
-                    <i class="bi bi-folder2-open me-2 text-primary"></i> 
-                    <span class="text-truncate fw-bold" title="${group.title}">${group.title}</span>
+            <div class="card-header bg-white border-bottom-0 py-2 d-flex align-items-center">
+                <i class="bi bi-grip-vertical text-muted me-2" style="cursor: grab;"></i>
+                
+                <div class="flex-grow-1 me-3">
+                    <input type="text" class="form-control fw-bold border-0 px-2 fs-5" 
+                           value="${group.title}" 
+                           onchange="parsedStructure[${gIdx}].title = this.value"
+                           style="background: transparent;">
                 </div>
-                <div class="d-flex align-items-center justify-content-center" style="width: 40%;">
-                    <div class="input-group input-group-sm">
-                        <span class="input-group-text bg-white text-muted">本章</span>
-                        <input type="number" class="form-control text-center" id="chapter-total-${gIdx}" value="${chapterTotalWords}" step="1" min="0">
-                        <button class="btn btn-outline-secondary" type="button" onclick="distributeChapterWords(${gIdx})"><i class="bi bi-arrow-down-up"></i> 分配</button>
+                
+                <div class="d-flex align-items-center gap-2">
+                    <div class="input-group input-group-sm" style="width: 140px;">
+                        <span class="input-group-text bg-light">字数</span>
+                        <input type="number" class="form-control text-center" value="${chapterTotalWords}" readonly>
+                    </div>
+                    
+                    <div class="btn-group btn-group-sm">
+                        <button class="btn btn-outline-secondary" onclick="addLeaf(${gIdx})" title="末尾添加小节">
+                            <i class="bi bi-plus-lg"></i>
+                        </button>
+                        <button class="btn btn-outline-danger" onclick="deleteGroup(${gIdx})" title="删除整章">
+                            <i class="bi bi-trash"></i>
+                        </button>
                     </div>
                 </div>
-                <div class="d-flex align-items-center justify-content-end" style="width: 25%;">
-                    <button class="btn btn-sm btn-link text-primary p-0 me-2" onclick="sortLeaves(${gIdx})"><i class="bi bi-sort-numeric-down"></i></button>
-                    <button class="btn btn-sm btn-link text-success p-0 me-2" onclick="addLeaf(${gIdx})"><i class="bi bi-plus-circle"></i></button>
-                    <button class="btn btn-sm btn-link text-danger p-0" onclick="deleteGroup(${gIdx})"><i class="bi bi-trash"></i></button>
-                </div>
             </div>
-            <div class="chapter-body"></div>
+            <div class="card-body p-0">
+                <div class="list-group list-group-flush chapter-body"></div>
+            </div>
         `;
         
         const body = card.querySelector('.chapter-body');
-        group.children.forEach((child, cIdx) => {
-            if (!child.chartType) child.chartType = 'none';
-            const row = document.createElement('div');
-            row.className = 'leaf-row';
-            const indent = Math.max(0, (child.level - 2) * 20); 
-            const dataBtnColor = child.useData ? 'btn-outline-success active' : 'btn-outline-secondary';
-            // --- 图表按钮状态逻辑 ---
-            let chartIcon, chartText, chartBtnClass;
-            if (child.chartType === 'table') {
-                chartIcon = 'bi-table';
-                chartText = '三线表';
-                chartBtnClass = 'btn-outline-primary active';
-            } else if (child.chartType === 'plot') {
-                chartIcon = 'bi-graph-up';
-                chartText = '统计图';
-                chartBtnClass = 'btn-outline-danger active'; // 用不同颜色区分
-            } else {
-                chartIcon = 'bi-slash-circle'; // 或者 bi-image
-                chartText = '无图表';
-                chartBtnClass = 'btn-outline-secondary'; // 灰色默认
-            }
-            
-            row.innerHTML = `
-                <div class="d-flex align-items-center flex-grow-1" style="padding-left: ${indent}px;">
-                    ${child.level > 2 ? '<i class="bi bi-arrow-return-right text-muted me-2 small"></i>' : ''}
-                    <input type="text" class="leaf-title-input" value="${child.text}" onchange="updateLeaf(${gIdx}, ${cIdx}, 'text', this.value)">
-                </div>
+
+        // --- 渲染小节列表 ---
+        if (group.children && group.children.length > 0) {
+            group.children.forEach((child, cIdx) => {
+                const row = document.createElement('div');
+                row.className = 'list-group-item d-flex align-items-center py-2 px-3 border-start-0 border-end-0';
                 
-                <div class="me-2">
-                    <button type="button" class="btn btn-sm ${dataBtnColor}" onclick="toggleLeafData(${gIdx}, ${cIdx})" title="是否包含具体数据" style="font-size: 0.75rem; padding: 2px 6px;">
-                        <i class="bi bi-database${child.useData ? '-fill-check' : ''}"></i> 数据
-                    </button>
-                </div>
+                // 1. 计算缩进
+                const currentLevel = child.level || 2; 
+                const indent = Math.max(0, (currentLevel - 2) * 24); 
 
-                <div class="me-2">
-                    <button type="button" class="btn btn-sm ${chartBtnClass}" 
-                            onclick="toggleLeafChart(${gIdx}, ${cIdx})" 
-                            title="点击切换：无 -> 表格 -> 统计图" 
-                            style="font-size: 0.75rem; padding: 2px 6px; min-width: 70px;">
-                        <i class="bi ${chartIcon}"></i> ${chartText}
-                    </button>
-                </div>
+                // 2. 状态样式
+                const isDataActive = child.useData;
+                const isChartActive = child.chartType && child.chartType !== 'none';
+                
+                // 图表图标
+                let chartIcon = 'bi-graph-up';
+                if (child.chartType === 'table') chartIcon = 'bi-table';
 
-                <div class="word-input-group">
-                    <input type="number" class="form-control form-control-sm word-input" value="${child.words}" step="1" min="0" onchange="updateLeaf(${gIdx}, ${cIdx}, 'words', this.value)">
-                    <span class="ms-1 small text-muted">字</span>
-                </div>
-                <button class="btn btn-sm text-danger ms-2" onclick="deleteLeaf(${gIdx}, ${cIdx})" title="删除此写作点">
-                    <i class="bi bi-trash3"></i>
-                </button>
-            `;
-            body.appendChild(row);
-        });
-        container.appendChild(card);
+                row.innerHTML = `
+                    <div class="d-flex align-items-center flex-grow-1 me-3" style="padding-left: ${indent}px; transition: padding 0.2s;">
+                        ${currentLevel > 2 ? '<i class="bi bi-arrow-return-right text-muted me-2 opacity-50"></i>' : ''}
+                        <input type="text" class="form-control form-control-sm border-0 px-1" 
+                               value="${child.text}" 
+                               onchange="updateLeaf(${gIdx}, ${cIdx}, 'text', this.value)"
+                               style="box-shadow: none; background: transparent; font-weight: 500;">
+                    </div>
+                    
+                    <div class="d-flex align-items-center gap-2 opacity-75 hover-opacity-100">
+                        
+                        <div class="btn-group btn-group-sm me-1">
+                            <button type="button" class="btn btn-light border-0 text-secondary" 
+                                    onclick="changeLeafLevel(${gIdx}, ${cIdx}, -1)" title="升级 (向左)">
+                                <i class="bi bi-chevron-left"></i>
+                            </button>
+                            <button type="button" class="btn btn-light border-0 text-secondary" 
+                                    onclick="changeLeafLevel(${gIdx}, ${cIdx}, 1)" title="降级 (向右)">
+                                <i class="bi bi-chevron-right"></i>
+                            </button>
+                        </div>
+
+                        <div class="btn-group btn-group-sm me-1">
+                            <button type="button" class="btn ${isDataActive ? 'btn-success text-white' : 'btn-outline-secondary text-muted'}" 
+                                    onclick="toggleLeafData(${gIdx}, ${cIdx})" 
+                                    title="数据开关" style="width: 32px;">
+                                <i class="bi bi-database${isDataActive ? '-fill-check' : ''}"></i>
+                            </button>
+                            <button type="button" class="btn ${isChartActive ? 'btn-primary text-white' : 'btn-outline-secondary text-muted'}" 
+                                    onclick="toggleLeafChart(${gIdx}, ${cIdx})" 
+                                    title="图表: ${child.chartType === 'table' ? '表格' : (child.chartType === 'plot' ? '统计图' : '无')}" 
+                                    style="width: 32px;">
+                                <i class="bi ${chartIcon}"></i>
+                            </button>
+                        </div>
+
+                        <div class="input-group input-group-sm" style="width: 75px;">
+                            <input type="number" class="form-control text-center px-1" 
+                                   value="${child.words}" step="50" min="0" 
+                                   onchange="updateLeaf(${gIdx}, ${cIdx}, 'words', this.value)">
+                        </div>
+
+                        <div class="btn-group btn-group-sm">
+                            <button class="btn btn-link text-primary p-1" onclick="insertSubLeaf(${gIdx}, ${cIdx})" title="插入子标题">
+                                <i class="bi bi-plus-circle-fill"></i>
+                            </button>
+                            <button class="btn btn-link text-danger p-1" onclick="deleteLeaf(${gIdx}, ${cIdx})" title="删除">
+                                <i class="bi bi-x-circle"></i>
+                            </button>
+                        </div>
+                    </div>
+                `;
+                
+                // 鼠标悬停高亮当前行效果 (可选)
+                row.addEventListener('mouseenter', () => row.style.backgroundColor = '#f8f9fa');
+                row.addEventListener('mouseleave', () => row.style.backgroundColor = 'transparent');
+                
+                body.appendChild(row);
+            });
+        } else {
+            body.innerHTML = '<div class="text-center py-3 text-muted fst-italic"><small>点击上方 + 添加小节</small></div>';
+        }
+
+        configArea.appendChild(card);
     });
-    document.getElementById('totalWords').innerText = globalTotal;
+
+    const totalEl = document.getElementById('totalWords');
+    if (totalEl) totalEl.innerText = globalTotal;
 };
+
+function updateTotalWordsDisplay() {
+    const totalEl = document.getElementById('totalWordsCount');
+    if (!totalEl) return;
+    let total = 0;
+    parsedStructure.forEach(g => {
+        if(g.children) g.children.forEach(c => total += parseInt(c.words || 0));
+    });
+    totalEl.innerText = total;
+}
 
 window.toggleLeafChart = function(gIdx, cIdx) {
     const child = parsedStructure[gIdx].children[cIdx];
-    // 状态轮转: none -> table -> plot -> none
-    if (child.chartType === 'none' || !child.chartType) {
+    if (!child.chartType || child.chartType === 'none') {
         child.chartType = 'table';
     } else if (child.chartType === 'table') {
         child.chartType = 'plot';
     } else {
         child.chartType = 'none';
     }
-    
-    // 如果开启了图表，建议自动开启“数据”开关，逻辑更顺畅（可选）
-    if (child.chartType !== 'none') {
-        child.useData = true;
-    }
-
-    renderConfigArea(); // 重新渲染以更新图标和颜色
+    // 如果开启了图表，自动开启数据开关
+    if (child.chartType !== 'none') child.useData = true;
+    renderConfigArea();
 };
 
 // [修改] 章节手动分配：移除取整逻辑，改为精确分配
@@ -432,31 +492,30 @@ window.distributeChapterWords = function(gIdx) {
     renderConfigArea();
 }
 
+window.insertSubLeaf = function(gIdx, cIdx) {
+    const parentLeaf = parsedStructure[gIdx].children[cIdx];
+    const newLevel = (parentLeaf.level || 2) + 1;
+    const finalLevel = newLevel > 6 ? 6 : newLevel;
+
+    const newLeaf = {
+        text: "", // 留空让用户填
+        level: finalLevel,
+        words: 300, 
+        useData: false,
+        chartType: 'none'
+    };
+    parsedStructure[gIdx].children.splice(cIdx + 1, 0, newLeaf);
+    renderConfigArea();
+};
+
 window.updateLeaf = function(gIdx, cIdx, field, value) {
     if (field === 'words') value = parseInt(value) || 0;
     parsedStructure[gIdx].children[cIdx][field] = value;
     if (field === 'words') renderConfigArea(); // Update total words
-    if (field === 'text') sortLeaves(gIdx);
 }
 
 window.toggleLeafData = function(gIdx, cIdx) {
     parsedStructure[gIdx].children[cIdx].useData = !parsedStructure[gIdx].children[cIdx].useData;
-    renderConfigArea();
-}
-
-window.sortLeaves = function(gIdx) {
-    const group = parsedStructure[gIdx];
-    const leaves = group.children.filter(c => !c.isParent);
-    const parents = group.children.filter(c => c.isParent);
-    leaves.sort((a, b) => {
-        const getVer = s => (s.match(/^(\d+(\.\d+)*)/) || ['999'])[0].split('.').map(Number);
-        const vA = getVer(a.text), vB = getVer(b.text);
-        for(let i=0; i<Math.max(vA.length, vB.length); i++) {
-            if ((vA[i]||0) !== (vB[i]||0)) return (vA[i]||0) - (vB[i]||0);
-        }
-        return 0;
-    });
-    group.children = [...parents, ...leaves];
     renderConfigArea();
 }
 
@@ -468,10 +527,51 @@ window.deleteLeaf = function(gIdx, cIdx) {
     }
 }
 
-window.addLeaf = function(gIdx) {
-    const title = prompt("请输入新小节标题");
-    if (title) { parsedStructure[gIdx].children.push({ text: title, isParent: false, words: 500 }); sortLeaves(gIdx); }
+window.changeLeafLevel = function(gIdx, cIdx, delta) {
+    const child = parsedStructure[gIdx].children[cIdx];
+    // 默认层级为 2 (二级标题)，允许范围 2~6
+    let currentLevel = child.level || 2;
+    let newLevel = currentLevel + delta;
+    
+    // 边界限制：不能升级成章(1级)，也不能太深(>6级)
+    if (newLevel < 2) newLevel = 2;
+    if (newLevel > 6) newLevel = 6;
+    
+    child.level = newLevel;
+    renderConfigArea(); // 重绘以显示新缩进
 };
+
+window.addLeaf = function(gIdx) {
+    const title = prompt("请输入新小节标题\n(提示：输入 '1.1.1 标题' 可自动识别为三级标题)");
+    
+    if (title && title.trim()) {
+        const cleanTitle = title.trim();
+        
+        // 自动识别层级
+        let level = 2; 
+        if (/^\d+(\.\d+){1}\s/.test(cleanTitle)) level = 2;      // 1.1
+        else if (/^\d+(\.\d+){2}\s/.test(cleanTitle)) level = 3; // 1.1.1
+        else if (/^\d+(\.\d+){3}\s/.test(cleanTitle)) level = 4; // 1.1.1.1
+        
+        const needsData = /结果|分析|实验|数据|验证|测试|调研|统计/.test(cleanTitle);
+
+        if (!parsedStructure[gIdx].children) {
+            parsedStructure[gIdx].children = [];
+        }
+
+        parsedStructure[gIdx].children.push({ 
+            text: cleanTitle, 
+            isParent: false, 
+            words: 500,  
+            level: level, 
+            useData: needsData,
+            chartType: 'none'
+        }); 
+        
+        renderConfigArea(); 
+    }
+};
+
 window.deleteGroup = function(gIdx) { if(confirm("确定删除该章节？")) { parsedStructure.splice(gIdx, 1); renderConfigArea(); } };
 window.addManualChapter = function() {
     const title = prompt("请输入新章节标题");

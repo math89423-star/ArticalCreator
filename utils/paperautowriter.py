@@ -10,6 +10,15 @@ from .reference import ReferenceManager
 from .word import TextCleaner
 from .prompts import get_rewrite_prompt, get_word_distribution_prompt, get_academic_thesis_prompt
 from .word import MarkdownToDocx
+try:
+    from docx import Document
+except ImportError:
+    Document = None
+try:
+    from pypdf import PdfReader
+except ImportError:
+    PdfReader = None
+
 
 class PaperAutoWriter:
     def __init__(self, api_key: str, base_url: str, model: str):
@@ -19,14 +28,55 @@ class PaperAutoWriter:
         # 主线程客户端
         self.main_client = OpenAI(api_key=api_key, base_url=base_url, timeout=120.0)
     
-    def _call_llm_with_client(self, client, system_prompt: str, user_prompt: str) -> str:
-        """使用指定的 client 实例调用 LLM"""
+    def _call_llm_with_client(self, client, system_prompt: str, user_prompt: str, images: list = None) -> str:
+        """
+        使用指定的 client 实例调用 LLM
+        支持可选的 images 参数 (List[dict])，用于视觉模型输入
+        """
+        # 1. 构建消息体
+        messages = [{"role": "system", "content": system_prompt}]
+
+        if images and len(images) > 0:
+            # === 多模态消息构建 (Multimodal) ===
+            user_content = [{"type": "text", "text": user_prompt}]
+            
+            for img_file in images:
+                try:
+                    # 获取文件名后缀以确定 MIME type
+                    filename = img_file.get('name', 'image.jpg').lower()
+                    mime_type = "image/jpeg" # 默认
+                    if filename.endswith('.png'): mime_type = "image/png"
+                    elif filename.endswith('.webp'): mime_type = "image/webp"
+                    elif filename.endswith('.gif'): mime_type = "image/gif"
+                    elif filename.endswith('.bmp'): mime_type = "image/bmp"
+
+                    # 读取流并转为 base64
+                    stream = img_file.get('content')
+                    if stream:
+                        stream.seek(0) # 重置指针
+                        b64_str = base64.b64encode(stream.read()).decode('utf-8')
+                        
+                        user_content.append({
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:{mime_type};base64,{b64_str}"
+                            }
+                        })
+                except Exception as e:
+                    print(f"⚠️ 处理图片出错: {e}")
+            
+            messages.append({"role": "user", "content": user_content})
+        else:
+            # === 纯文本消息构建 ===
+            messages.append({"role": "user", "content": user_prompt})
+
+        # 2. 发送请求
         max_retries = 3
         for attempt in range(max_retries):
             try:
                 response = client.chat.completions.create(
                     model=self.model,
-                    messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
+                    messages=messages, # 使用构建好的 messages
                     temperature=0.7, 
                     stream=False
                 )
@@ -36,11 +86,13 @@ class PaperAutoWriter:
                 if attempt < max_retries - 1:
                     time.sleep(2)
                 else:
-                    raise e 
+                    # 如果是最后一次尝试失败，向上抛出异常或返回空字符串
+                    # 这里选择抛出，以便上层捕获错误信息
+                    raise e
 
-    def _call_llm(self, system_prompt: str, user_prompt: str) -> str:
-        """调用方法"""
-        return self._call_llm_with_client(self.main_client, system_prompt, user_prompt)
+    def _call_llm(self, system_prompt: str, user_prompt: str, images: list = None) -> str:
+        """调用方法 (增加 images 透传)"""
+        return self._call_llm_with_client(self.main_client, system_prompt, user_prompt, images=images)
 
     def _research_phase_with_client(self, client, topic: str) -> str:
         try:
@@ -480,15 +532,89 @@ class PaperAutoWriter:
             yield f"data: {json.dumps({'type': 'content', 'md': bib})}\n\n"
             yield f"data: {json.dumps({'type': 'done'})}\n\n"
 
-    def rewrite_chapter(self, title: str, section_title: str, user_instruction: str, context: str, custom_data: str, original_content: str = "") -> str:
+    def _process_uploaded_files(self, files):
+        """
+        处理上传的文件列表：
+        1. 文档类 (PDF, DOCX, TXT, CSV) -> 提取为文本字符串
+        2. 图片类 -> 保留原始对象 (以便传给 Vision 模型)
+        """
+        if not files:
+            return "", []
+
+        extracted_text = []
+        image_files = []
+
+        for f in files:
+            filename = f.get('name', '').lower()
+            content_stream = f.get('content') # 这是一个 BytesIO 对象
+            
+            if not content_stream:
+                continue
+                
+            # 重置指针
+            content_stream.seek(0)
+
+            # --- A. 图片处理 ---
+            if filename.endswith(('.png', '.jpg', '.jpeg', '.bmp', '.webp')):
+                # 将图片数据转为 base64 或直接传递流，取决于你的 _call_llm 实现
+                # 这里我们传递原始 dict，让底层决定怎么处理
+                image_files.append(f)
+            
+            # --- B. 文档处理 ---
+            elif filename.endswith('.docx') and Document:
+                try:
+                    doc = Document(content_stream)
+                    text = "\n".join([para.text for para in doc.paragraphs])
+                    extracted_text.append(f"【参考文档：{filename}】\n{text}")
+                except Exception as e:
+                    print(f"Error parsing docx {filename}: {e}")
+            
+            elif filename.endswith('.pdf') and PdfReader:
+                try:
+                    reader = PdfReader(content_stream)
+                    text = ""
+                    for page in reader.pages:
+                        text += page.extract_text() + "\n"
+                    extracted_text.append(f"【参考文档：{filename}】\n{text}")
+                except Exception as e:
+                    print(f"Error parsing pdf {filename}: {e}")
+            
+            elif filename.endswith(('.txt', '.csv', '.md')):
+                try:
+                    text = content_stream.read().decode('utf-8', errors='ignore')
+                    extracted_text.append(f"【参考文档：{filename}】\n{text}")
+                except Exception as e:
+                    print(f"Error reading text {filename}: {e}")
+
+        return "\n\n".join(extracted_text), image_files
+    
+    def rewrite_chapter(self, title: str, section_title: str, user_instruction: str, context: str, custom_data: str, original_content: str = "", files: list = None) -> str:
+        # 【修改点 1】增加了 files 参数，默认为 None
+        
         chapter_num = self._extract_chapter_num(section_title)
         
+        # 【修改点 2】处理上传的文件
+        # 提取文档文本 和 图片列表
+        file_text_context, image_files = self._process_uploaded_files(files)
+        
+        # 【修改点 3】将提取的文档内容，合并到 custom_data 或 instruction 中
+        # 这样 LLM 就能“读”到 Word/PDF 的内容了
+        if file_text_context:
+            custom_data = f"{custom_data}\n\n{file_text_context}"
+            # 或者追加到 instruction，加强提示
+            user_instruction += f"\n\n(请参考我上传的附件文档内容进行撰写)"
+
         # 1. 构建 Prompt
         sys_prompt = get_rewrite_prompt(title, section_title, user_instruction, context[-800:], custom_data, original_content, chapter_num)
+        
         user_prompt = f"论文题目：{title}\n请修改章节：{section_title}\n用户的具体修改意见：{user_instruction}\n【最高指令】直接输出正文。如果需要绘图，请输出完整的 Markdown 代码块 (```python ... ```)，不要解释代码。"
         
-        # 2. 调用 LLM
-        content = self._call_llm(sys_prompt, user_prompt)
+        # 【修改点 4】调用 LLM 时传入 images
+        # 注意：你需要确保 self._call_llm 方法能够接收 images 参数并传递给 GPT-4o/Claude
+        if image_files:
+            content = self._call_llm(sys_prompt, user_prompt, images=image_files)
+        else:
+            content = self._call_llm(sys_prompt, user_prompt)
 
         # 3. [Step 1] 清洗废话标题
         garbage_patterns = [
@@ -508,7 +634,6 @@ class PaperAutoWriter:
             content += "\n```"
 
         # B. 宽容正则：允许 ```python, ``` python, 甚至不写 python 的 ``` 
-        # (?:python|py)? : 可选匹配语言标识
         code_block_pattern = re.compile(r'(```\s*(?:python|py)?\s*[\s\S]*?```)', re.IGNORECASE)
         
         def image_replacer(match):
@@ -518,7 +643,6 @@ class PaperAutoWriter:
             lines = full_block.split('\n')
             
             # 过滤掉第一行 (```xxx) 和最后一行 (```)
-            # 只要这一行包含 ``` 就认为是标记行
             code_lines = [line for line in lines if '```' not in line]
             
             if not code_lines: return "" # 空块
@@ -528,13 +652,13 @@ class PaperAutoWriter:
 
             try:
                 # 执行绘图
+                # 确保引入了 MarkdownToDocx 或相应的绘图工具
                 img_buf = MarkdownToDocx.exec_python_plot(code)
                 if img_buf:
                     b64_data = base64.b64encode(img_buf.getvalue()).decode('utf-8')
                     # 返回图片 HTML
                     return f'\n\n<div align="center" class="plot-container"><img src="data:image/png;base64,{b64_data}" style="max-width:85%; border:1px solid #eee; padding:5px; border-radius:4px;"></div>\n\n'
                 else:
-                    # 执行失败返回空，隐藏代码块
                     return "" 
             except Exception as e:
                 print(f"Plot Logic Error: {e}")
@@ -547,7 +671,7 @@ class PaperAutoWriter:
         new_content = re.sub(r'\n{3,}', '\n\n', new_content)
 
         return new_content.strip()
-    
+
     def plan_word_count(self, total_words: int, outline_list: List[str]) -> Dict[str, Dict]:
         outline_str = "\n".join(outline_list)
         prompt = get_word_distribution_prompt(total_words, outline_str)

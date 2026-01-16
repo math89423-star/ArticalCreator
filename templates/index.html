@@ -201,6 +201,12 @@
                     <label class="form-label fw-bold">修改指令 (Prompt)</label>
                     <textarea class="form-control" id="rewriteInstruction" rows="4" placeholder="例如：请增加关于2024年市场数据的分析；语气更加客观一点..."></textarea>
                 </div>
+
+                <div class="mb-3">
+                    <label class="form-label fw-bold">参考资料 (可选)</label>
+                    <input type="file" class="form-control" id="rewriteFileInput" multiple accept=".png,.jpg,.jpeg,.bmp,.docx,.pdf,.txt,.csv,.xlsx">
+                    <div class="form-text small text-muted">支持上传图片、文档、表格作为重写依据。</div>
+                </div>
             </div>
             <div class="modal-footer">
                 <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>

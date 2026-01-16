@@ -625,11 +625,14 @@ window.openRewriteModal = function(gIdx, cIdx) {
 window.openRewriteModalFromResult = function(sectionTitle) {
     document.getElementById('rewriteSectionTitle').value = sectionTitle;
     document.getElementById('rewriteInstruction').value = ""; 
+    // 【新增】清空文件选择
+    const fileInput = document.getElementById('rewriteFileInput');
+    if(fileInput) fileInput.value = ''; 
+
     const modalEl = document.getElementById('rewriteModal');
     const modalInstance = bootstrap.Modal.getOrCreateInstance(modalEl);
     modalInstance.show();
 };
-
 window.openManualEditModal = function(sectionTitle) {
     let content = extractSectionContent(sectionTitle);
     if (!content) {

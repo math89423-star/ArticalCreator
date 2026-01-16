@@ -739,9 +739,11 @@ window.renderEnrichedResult = function(mdText) {
 
 window.executeRewrite = async function() {
     const instruction = document.getElementById('rewriteInstruction').value.trim();
-    if (!instruction) { alert("请输入修改指令"); return; }
+    // 允许指令为空，如果用户只是上传了文件希望根据文件重写
+    // if (!instruction) { alert("请输入修改指令"); return; } 
 
     const sectionTitle = document.getElementById('rewriteSectionTitle').value;
+    const fileInput = document.getElementById('rewriteFileInput'); // 【新增】获取文件输入框
     
     const modalEl = document.getElementById('rewriteModal');
     const modalInstance = bootstrap.Modal.getOrCreateInstance(modalEl);
@@ -750,22 +752,30 @@ window.executeRewrite = async function() {
     currentRewritingTitle = sectionTitle;
     renderEnrichedResult(fullMarkdownText);
     
-    appendLog(`🖊️ AI正在重写章节：[${sectionTitle}]...`, 'warn');
+    appendLog(`🖊️ AI正在重写章节：[${sectionTitle}] (含附件)...`, 'warn');
     const originalContent = extractSectionContent(sectionTitle);
     
     try {
-        const formData = {
-            title: document.getElementById('paperTitle').value,
-            section_title: sectionTitle,
-            instruction: instruction,
-            context: fullMarkdownText.slice(0, 1500), 
-            custom_data: document.getElementById('customData').value,
-            original_content: originalContent
-        };
+        // 【修改】构建 FormData 对象
+        const formData = new FormData();
+        formData.append('title', document.getElementById('paperTitle').value);
+        formData.append('section_title', sectionTitle);
+        formData.append('instruction', instruction);
+        formData.append('context', fullMarkdownText.slice(0, 1500));
+        formData.append('custom_data', document.getElementById('customData').value);
+        formData.append('original_content', originalContent);
 
+        // 【新增】循环添加所有选中的文件
+        if (fileInput.files.length > 0) {
+            for (let i = 0; i < fileInput.files.length; i++) {
+                formData.append('rewrite_files', fileInput.files[i]);
+            }
+        }
+
+        // 发送请求 (authenticatedFetch 会自动处理 FormData 的 Content-Type)
         const res = await authenticatedFetch('/rewrite_section', {
             method: 'POST',
-            body: JSON.stringify(formData)
+            body: formData 
         });
         
         const data = await res.json();

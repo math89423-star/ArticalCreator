@@ -92,20 +92,45 @@ def control_task():
 def rewrite_section():
     if not check_auth(): return jsonify({"error": "Unauthorized"}), 401
     
-    data = request.json
-    title = data.get('title')
-    section_title = data.get('section_title')
-    instruction = data.get('instruction')
-    context = data.get('context', '') 
-    custom_data = data.get('custom_data', '')
-    original_content = data.get('original_content', '')
+    # 【修改 1】数据不再从 request.json 获取，改为 request.form (因为前端用了 FormData)
+    title = request.form.get('title')
+    section_title = request.form.get('section_title')
+    instruction = request.form.get('instruction')
+    context = request.form.get('context', '') 
+    custom_data = request.form.get('custom_data', '')
+    original_content = request.form.get('original_content', '')
     
     if not section_title: return jsonify({"error": "No section title"}), 400
+
+    # 【新增】处理上传的文件
+    uploaded_files = request.files.getlist('rewrite_files')
+    raw_files_data = []
+    
+    if uploaded_files:
+        for file in uploaded_files:
+            if file.filename:
+                # 读取文件内容到内存
+                file_content = io.BytesIO(file.read())
+                raw_files_data.append({
+                    'name': file.filename, 
+                    'content': file_content
+                })
 
     writer = PaperAutoWriter(config.API_KEY, config.BASE_URL, config.MODEL_NAME)
     
     try:
-        new_content = writer.rewrite_chapter(title, section_title, instruction, context, custom_data, original_content)
+        # 【修改 2】调用 rewrite_chapter 时传入 files 参数
+        # 注意：你需要确保你的 PaperAutoWriter.rewrite_chapter 方法定义中增加了 files 参数
+        new_content = writer.rewrite_chapter(
+            title, 
+            section_title, 
+            instruction, 
+            context, 
+            custom_data, 
+            original_content,
+            files=raw_files_data  # 传递处理后的文件列表
+        )
+        
         # 简单清洗
         clean_pattern = r'^#+\s*' + re.escape(section_title) + r'.*\n'
         new_content = re.sub(clean_pattern, '', new_content, flags=re.IGNORECASE|re.MULTILINE).strip()
@@ -114,7 +139,8 @@ def rewrite_section():
     except Exception as e:
         print(f"Rewrite error: {e}")
         return jsonify({"status": "error", "msg": str(e)}), 500
-
+    
+    
 @bp.route('/export_docx', methods=['POST'])
 def export_docx():
     if not check_auth(): return jsonify({"error": "无效的卡密"}), 401

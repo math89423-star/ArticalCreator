@@ -126,15 +126,58 @@ window.exportToMarkdown = function() {
     const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([fullMarkdownText], {type: 'text/markdown'}));
     a.download = `${document.getElementById('paperTitle').value || 'thesis'}.md`; a.click();
 };
+
 window.exportToDocx = async function() {
-    if(!fullMarkdownText) return alert("无内容");
+    if(!fullMarkdownText) return alert("无内容可导出");
+    
+    const btn = document.querySelector('button[onclick="exportToDocx()"]');
+    const originalText = btn ? btn.innerText : '';
+    if(btn) { btn.innerText = "生成中..."; btn.disabled = true; }
+
     try {
-        const res = await authenticatedFetch('/export_docx', { method: 'POST', body: JSON.stringify({ content: fullMarkdownText }) });
+        const res = await authenticatedFetch('/export_docx', { 
+            method: 'POST', 
+            body: JSON.stringify({ content: fullMarkdownText }) 
+        });
+        
         if (res.ok) {
-            const url = window.URL.createObjectURL(await res.blob());
-            const a = document.createElement('a'); a.href = url; a.download = `${document.getElementById('paperTitle').value || 'thesis'}.docx`; a.click();
+            // 1. 获取 Blob 数据
+            const blob = await res.blob();
+            
+            // 2. 强制指定 MIME 类型 (关键)
+            const newBlob = new Blob([blob], {
+                type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            });
+
+            // 3. 创建下载链接
+            const url = window.URL.createObjectURL(newBlob);
+            const a = document.createElement('a');
+            a.style.display = 'none';
+            a.href = url;
+            
+            // 4. 获取文件名
+            const title = document.getElementById('paperTitle').value || 'thesis';
+            a.download = `${title}.docx`;
+            
+            document.body.appendChild(a);
+            a.click();
+            
+            // 5. 清理
+            setTimeout(() => {
+                document.body.removeChild(a);
+                window.URL.revokeObjectURL(url);
+            }, 100);
+            
+        } else {
+            const err = await res.json();
+            alert("导出失败: " + (err.error || "未知错误"));
         }
-    } catch(e) { alert("导出失败"); }
+    } catch(e) { 
+        console.error(e);
+        alert("网络请求失败或浏览器拦截了下载。请检查浏览器地址栏是否允许'不安全内容'。"); 
+    } finally {
+        if(btn) { btn.innerText = originalText; btn.disabled = false; }
+    }
 };
 
 // ============================================================

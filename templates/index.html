@@ -7,7 +7,21 @@
     <link href="https://cdn.staticfile.org/bootstrap/5.3.0/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdn.staticfile.org/bootstrap-icons/1.10.0/font/bootstrap-icons.min.css">
     <script src="https://cdn.staticfile.org/marked/9.1.6/marked.min.js"></script>
-    <link rel="stylesheet" href="../static/style.css"> 
+    <script src="https://cdn.staticfile.org/marked/9.1.6/marked.min.js"></script>
+    <script>
+    window.MathJax = {
+    tex: {
+        inlineMath: [['$', '$'], ['\\(', '\\)']], // 允许使用单 $ 符号作为行内公式
+        displayMath: [['$$', '$$'], ['\\[', '\\]']],
+        processEscapes: true
+    },
+    options: {
+        skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code']
+    }
+    };
+    </script>
+    <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+        <link rel="stylesheet" href="../static/style.css"> 
 </head>
 <body>
 

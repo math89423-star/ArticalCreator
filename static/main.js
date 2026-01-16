@@ -664,6 +664,10 @@ window.renderEnrichedResult = function(mdText) {
     
     // [修改点] 强制包裹一层 markdown-body div，确保三线表 CSS (.markdown-body table) 立即生效
     container.innerHTML = `<div class="markdown-body">${rawHtml}</div>`;
+    if (window.MathJax && window.MathJax.typesetPromise) {
+        // 等待 DOM 更新后渲染公式
+        window.MathJax.typesetPromise([container]).catch((err) => console.log(err));
+    }
     // 下面的逻辑保持完全不变
     const headers = container.querySelectorAll('h1, h2, h3, h4');
     headers.forEach((header) => {

@@ -18,56 +18,44 @@ def register_custom_font():
     自动查找并加载中文字体
     查找顺序：本地文件 -> Linux常见字体 -> Windows常见字体
     """
-    # 1. 定义可能的本地路径 (相对路径 + 绝对路径)
     current_dir = os.path.dirname(os.path.abspath(__file__))
-    project_root = os.path.dirname(current_dir) # 假设 word.py 在子目录，往上一级找
+    project_root = os.path.dirname(current_dir)
     
     possible_font_paths = [
-        'SimHei.ttf',                       # 1. 当前运行目录
-        os.path.join(current_dir, 'SimHei.ttf'), # 2. word.py 同级目录
-        os.path.join(project_root, 'SimHei.ttf'),# 3. 项目根目录
-        '/usr/share/fonts/truetype/wqy/wqy-microhei.ttc', # 4. Linux 常见路径 (文泉驿)
-        '/usr/share/fonts/truetype/arphic/ukai.ttc'       # 5. Linux 常见路径 (楷体)
+        'SimHei.ttf',
+        os.path.join(current_dir, 'SimHei.ttf'),
+        os.path.join(project_root, 'SimHei.ttf'),
+        '/usr/share/fonts/truetype/wqy/wqy-microhei.ttc',
+        '/usr/share/fonts/truetype/arphic/ukai.ttc'
     ]
 
-    # 2. 尝试加载本地文件
     for font_path in possible_font_paths:
         if os.path.exists(font_path):
             try:
                 prop = font_manager.FontProperties(fname=font_path)
                 font_manager.fontManager.addfont(font_path)
-                print(f"[Font] 成功加载字体文件: {font_path}")
-                # 设置为全局默认
+                # print(f"[Font] 成功加载字体文件: {font_path}")
                 plt.rcParams['font.sans-serif'] = [prop.get_name()]
                 plt.rcParams['axes.unicode_minus'] = False
                 return prop.get_name()
             except Exception as e:
                 print(f"[Font] 尝试加载 {font_path} 失败: {e}")
 
-    # 3. 如果本地文件都没找到，尝试系统已安装的字体名称
-    # 优先 Linux 开源字体，后备 Windows 字体
     fonts_to_try = [
-        'WenQuanYi Micro Hei',  # Linux 最常见
-        'WenQuanYi Zen Hei', 
-        'Noto Sans CJK SC',     # Google/Linux
-        'Droid Sans Fallback',  # Android/Linux
-        'SimHei',               # Windows
-        'Microsoft YaHei',      # Windows
-        'SimSun'                # Windows
+        'WenQuanYi Micro Hei', 'WenQuanYi Zen Hei', 'Noto Sans CJK SC',
+        'Droid Sans Fallback', 'SimHei', 'Microsoft YaHei', 'SimSun'
     ]
     
-    # 获取系统字体列表
     system_fonts = {f.name for f in font_manager.fontManager.ttflist}
     
     for f in fonts_to_try:
         if f in system_fonts:
-            print(f"[Font] 使用系统安装字体: {f}")
             plt.rcParams['font.sans-serif'] = [f]
             plt.rcParams['axes.unicode_minus'] = False
             return f
 
     print("[Font] ❌ 警告: 未找到任何中文字体，中文将无法显示！请上传 SimHei.ttf 到项目目录。")
-    return 'sans-serif' # 最后的兜底
+    return 'sans-serif'
 
 # 初始化字体
 CURRENT_FONT_NAME = register_custom_font()
@@ -75,9 +63,62 @@ CURRENT_FONT_NAME = register_custom_font()
 class TextCleaner:
     @staticmethod
     def clean_special_chars(text):
-        text = text.replace('\u3000', '').replace('\u00A0', ' ').replace('\u200b', '')
+        # 1. 统一换行符
         text = text.replace('\r\n', '\n').replace('\r', '\n')
+        # 2. 替换全角空格和其他不可见字符为普通空格
+        text = text.replace('\u3000', ' ').replace('\u00A0', ' ').replace('\u200b', '')
         return text
+
+    @staticmethod
+    def fix_table_newlines(text):
+        """
+        【核心修复】解决 "文字 | 表头 |" 同行粘连问题。
+        如果不修复，Pandoc或Docx解析会将表格当做普通文本。
+        """
+        if not text: return ""
+        
+        # 先清洗干扰字符
+        text = TextCleaner.clean_special_chars(text)
+        
+        lines = text.split('\n')
+        final_lines = []
+        
+        for line in lines:
+            stripped = line.strip()
+            if not stripped:
+                final_lines.append(line)
+                continue
+            
+            # 检测是否包含表格特征：
+            # 1. 包含竖线
+            # 2. 竖线不是第一个字符（说明前面有文字粘连）
+            # 3. 包含至少两个竖线（构成表格结构）
+            pipe_count = stripped.count('|')
+            first_pipe_idx = stripped.find('|')
+            
+            if pipe_count >= 2 and first_pipe_idx > 0:
+                pre_content = stripped[:first_pipe_idx]
+                table_content = stripped[first_pipe_idx:]
+                
+                # 如果前面有实义文本（不仅仅是列表符 - 或 * 或 1.）
+                if pre_content.strip() and not pre_content.strip() in ['-', '*', '1.']:
+                    # 命中粘连！拆分它
+                    final_lines.append(pre_content.strip())
+                    final_lines.append('') # 强制插入空行
+                    final_lines.append(table_content)
+                    continue
+
+            # 普通行处理：如果是正常的表格行（以 | 开头），确保它上方有空行
+            if stripped.startswith('|') and pipe_count >= 1:
+                if final_lines:
+                    prev = final_lines[-1].strip()
+                    # 上一行有内容，且不是表格 -> 插入空行
+                    if prev and not prev.startswith('|'):
+                        final_lines.append('')
+            
+            final_lines.append(line)
+            
+        return '\n'.join(final_lines)
     
     @staticmethod
     def correct_punctuation(text):
@@ -93,21 +134,26 @@ class TextCleaner:
         text = re.sub(r'\[.*?\]\(.*?\)', save_mask, text)
         
         # 智能标点替换
-        text = re.sub(r'(?<=[\u4e00-\u9fa5]),', '，', text)
-        text = re.sub(r',(?=[\u4e00-\u9fa5])', '，', text)
-        text = re.sub(r'(?<=[\u4e00-\u9fa5])\.', '。', text) 
-        text = re.sub(r'(?<=[\u4e00-\u9fa5]):', '：', text)
-        text = re.sub(r':(?=[\u4e00-\u9fa5])', '：', text)
-        text = re.sub(r'(?<=[\u4e00-\u9fa5]);', '；', text)
-        text = re.sub(r';(?=[\u4e00-\u9fa5])', '；', text)
-        text = re.sub(r'(?<=[\u4e00-\u9fa5])\?', '？', text)
-        text = re.sub(r'\?(?=[\u4e00-\u9fa5])', '？', text)
-        text = re.sub(r'(?<=[\u4e00-\u9fa5])!', '！', text)
-        text = re.sub(r'!(?=[\u4e00-\u9fa5])', '！', text)
-        text = re.sub(r'(?<=[\u4e00-\u9fa5])\s*\(', '（', text)
-        text = re.sub(r'\((?=[\u4e00-\u9fa5])', '（', text)
-        text = re.sub(r'(?<=[\u4e00-\u9fa5])\)', '）', text)
-        text = re.sub(r'\)(?=[\u4e00-\u9fa5])', '）', text)
+        pairs = [
+            (r'(?<=[\u4e00-\u9fa5]),', '，'),
+            (r',(?=[\u4e00-\u9fa5])', '，'),
+            (r'(?<=[\u4e00-\u9fa5])\.', '。'),
+            (r'(?<=[\u4e00-\u9fa5]):', '：'),
+            (r':(?=[\u4e00-\u9fa5])', '：'),
+            (r'(?<=[\u4e00-\u9fa5]);', '；'),
+            (r';(?=[\u4e00-\u9fa5])', '；'),
+            (r'(?<=[\u4e00-\u9fa5])\?', '？'),
+            (r'\?(?=[\u4e00-\u9fa5])', '？'),
+            (r'(?<=[\u4e00-\u9fa5])!', '！'),
+            (r'!(?=[\u4e00-\u9fa5])', '！'),
+            (r'(?<=[\u4e00-\u9fa5])\s*\(', '（'),
+            (r'\((?=[\u4e00-\u9fa5])', '（'),
+            (r'(?<=[\u4e00-\u9fa5])\)', '）'),
+            (r'\)(?=[\u4e00-\u9fa5])', '）')
+        ]
+        
+        for p, r in pairs:
+            text = re.sub(p, r, text)
 
         def quote_replacer(match):
             content = match.group(1)
@@ -127,25 +173,37 @@ class TextCleaner:
 class MarkdownToDocx:
     @staticmethod
     def set_table_borders(table):
+        """
+        设置学术三线表样式：顶底粗线，中间细线，无竖线
+        """
         tbl = table._tbl
         tblPr = tbl.tblPr
+        # 清除默认样式
         for tag in ['w:tblStyle', 'w:tblBorders', 'w:tblLook']:
             element = tblPr.find(qn(tag))
             if element is not None: tblPr.remove(element)
+            
         tblBorders = OxmlElement('w:tblBorders')
+        
         def border(tag, val, sz, space="0", color="auto"):
             el = OxmlElement(f'w:{tag}')
             el.set(qn('w:val'), val)
-            el.set(qn('w:sz'), str(sz))
+            el.set(qn('w:sz'), str(sz)) # 1/8 pt. 24=3pt(显示为1.5磅), 4-6=细线
             el.set(qn('w:space'), space)
             el.set(qn('w:color'), color)
             return el
-        tblBorders.append(border('top', 'single', 12))
-        tblBorders.append(border('bottom', 'single', 12))
-        tblBorders.append(border('insideH', 'single', 4))
+            
+        # 顶线 (加粗)
+        tblBorders.append(border('top', 'single', 24))
+        # 底线 (加粗)
+        tblBorders.append(border('bottom', 'single', 24))
+        # 内部横线 (细线)
+        tblBorders.append(border('insideH', 'single', 6))
+        # 去除竖线
         tblBorders.append(border('left', 'nil', 0))
         tblBorders.append(border('right', 'nil', 0))
         tblBorders.append(border('insideV', 'nil', 0))
+        
         tblPr.append(tblBorders)
 
     @staticmethod
@@ -168,13 +226,11 @@ class MarkdownToDocx:
             code_str = re.sub(r'^```python', '', code_str.strip(), flags=re.MULTILINE|re.IGNORECASE)
             code_str = re.sub(r'^```', '', code_str.strip(), flags=re.MULTILINE)
             code_str = code_str.replace('\u3000', ' ').replace('\u00A0', ' ').replace('\u200b', '')
-            # 清洗配置
             code_str = re.sub(r"plt\.rcParams\[.*?\]\s*=\s*.*", "", code_str)
             code_str = re.sub(r"sns\.set_theme\(.*?\)", "", code_str) 
             code_str = re.sub(r"sns\.set\(.*?\)", "", code_str)
             plt.close('all') 
             plt.clf()
-            # 强制应用字体配置
             sns.set_theme(style="whitegrid")
             plt.rcParams['font.sans-serif'] = [CURRENT_FONT_NAME]
             plt.rcParams['axes.unicode_minus'] = False
@@ -197,8 +253,11 @@ class MarkdownToDocx:
         if not header_line.startswith('|'): return None, i
         headers = [c.strip() for c in header_line.strip('|').split('|')]
         i += 1
-        if i < len(lines) and re.match(r'^[|\-\s:]+$', lines[i].strip()): i += 1
+        # 兼容中文破折号和冒号
+        separator_line = lines[i].strip() if i < len(lines) else ""
+        if i < len(lines) and re.match(r'^[|\-\s:—–]+$', separator_line): i += 1
         else: return None, start_idx
+            
         data = [headers]
         while i < len(lines):
             line = lines[i].strip()
@@ -221,15 +280,15 @@ class MarkdownToDocx:
         style.paragraph_format.space_before = Pt(0)
         style.paragraph_format.space_after = Pt(0)
         
-        # 1. 基础清洗 (移除全角空格)
-        markdown_text = TextCleaner.clean_special_chars(markdown_text)
+        # 1. 【关键】先修复表格粘连问题
+        markdown_text = TextCleaner.fix_table_newlines(markdown_text)
         # 2. 标点修正
         markdown_text = TextCleaner.correct_punctuation(markdown_text)
         
         lines = markdown_text.split('\n')
         i = 0
         while i < len(lines):
-            line = lines[i].strip() # 使用 strip() 去除首尾空白
+            line = lines[i].strip()
             if not line: 
                 i += 1
                 continue
@@ -274,14 +333,13 @@ class MarkdownToDocx:
                     p = doc.add_paragraph()
                     p.alignment = WD_ALIGN_PARAGRAPH.CENTER
                     run = p.add_run()
-                    # 设置图片宽度为 14cm，适配 A4 纸
                     run.add_picture(img_stream, width=Cm(14)) 
                 except Exception as e:
                     print(f"Base64 Image Error: {e}")
                 i += 1
                 continue
 
-            # Python 代码块兜底
+            # Python 代码块
             if line.startswith('```python'):
                 code_block = []
                 i += 1
@@ -321,8 +379,12 @@ class MarkdownToDocx:
                                 run._element.rPr.rFonts.set(qn('w:eastAsia'), u'宋体')
                                 run.font.size = Pt(10.5)
                                 if r == 0: run.bold = True
-                        try: MarkdownToDocx.set_table_borders(table)
-                        except: pass
+                        try: 
+                            # 应用三线表
+                            MarkdownToDocx.set_table_borders(table)
+                        except Exception as e: 
+                            print(f"Table formatting error: {e}")
+                        
                         doc.add_paragraph()
                         i = next_i
                         continue
@@ -340,10 +402,7 @@ class MarkdownToDocx:
                     p.paragraph_format.space_after = Pt(6)
                 else:
                     p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
-                    # 恢复 Word 原生首行缩进 (24pt ≈ 2字符)
-                    # 替代了之前的全角空格方案
                     p.paragraph_format.first_line_indent = Pt(24) 
-                    
                     p.paragraph_format.line_spacing = 1.5
                     p.paragraph_format.space_after = Pt(0)
                     p.paragraph_format.space_before = Pt(0)
@@ -368,30 +427,16 @@ class TextReportParser:
     @staticmethod
     def parse(text: str) -> dict:
         """
-        解析开题报告文本，智能提取：题目、大纲、参考文献、文献综述
-        支持英文大纲 (Chapter X, 1.1, Abstract...)
+        解析开题报告文本
         """
-        data = {
-            "title": "",
-            "outline_content": "",
-            "cn_refs": [],
-            "en_refs": [],
-            "review": ""
-        }
-        if not text:
-            return data
-        # 1. 提取题目
-        # 策略A: 显式标记 "题目：" or "Title:"
+        data = { "title": "", "outline_content": "", "cn_refs": [], "en_refs": [], "review": "" }
+        if not text: return data
         title_match = re.search(r'(?:论文)?(?:题目|Title)[:：]\s*(.*)', text, re.IGNORECASE)
-        if title_match:
-            data["title"] = title_match.group(1).strip()
+        if title_match: data["title"] = title_match.group(1).strip()
         else:
-            # 策略B: 取第一行非空文本
             lines = [l.strip() for l in text.split('\n') if l.strip()]
-            if lines and len(lines[0]) < 100:
-                data["title"] = lines[0]
-        # 2. 提取参考文献 (先提取并移除，防止干扰大纲解析)
-        # 查找“参考文献”或 "References"
+            if lines and len(lines[0]) < 100: data["title"] = lines[0]
+        
         ref_split = re.split(r'^\s*(?:参考文献|References)[:：]?\s*$', text, flags=re.MULTILINE | re.IGNORECASE)
         main_body = text 
         if len(ref_split) > 1:
@@ -399,55 +444,36 @@ class TextReportParser:
             main_body = ref_split[0] 
             refs = [line.strip() for line in ref_text.split('\n') if line.strip()]
             for ref in refs:
-                # 清洗序号
                 clean_ref = re.sub(r'^(\[\d+\]|\d+\.|（\d+）|\(\d+\))\s*', '', ref)
                 if len(clean_ref) < 5: continue
-                
-                # 区分中英文
-                if re.search(r'[\u4e00-\u9fa5]', clean_ref):
-                    data["cn_refs"].append(clean_ref)
-                else:
-                    data["en_refs"].append(clean_ref)
-        # 3. 提取文献综述 (Review)
-        # 支持中文和英文关键词
-        review_keywords = ["文献综述", "研究现状", "国内外研究", "Literature Review", "Related Work"]
-        stop_keywords = r'(?:研究内容|研究方法|论文提纲|论文目录|第[一二三]章|3\.|^3\s|Chapter|Methodology|Research Content)'
+                if re.search(r'[\u4e00-\u9fa5]', clean_ref): data["cn_refs"].append(clean_ref)
+                else: data["en_refs"].append(clean_ref)
         
+        review_keywords = ["文献综述", "研究现状", "国内外研究", "Literature Review", "Related Work"]
         for kw in review_keywords:
-            pattern = rf'{kw}[:：]?\s*([\s\S]*?)(?={stop_keywords}|$)'
+            pattern = rf'{kw}[:：]?\s*([\s\S]*?)(?=(?:研究内容|研究方法|论文提纲|论文目录|第[一二三]章|3\.|^3\s|Chapter|Methodology|Research Content)|$)'
             match = re.search(pattern, main_body, re.IGNORECASE | re.MULTILINE)
             if match:
                 review_content = match.group(1).strip()
                 if len(review_content) > 50:
                     data["review"] = review_content
                     break
-        # 4. 提取大纲/目录 
-        # 尝试定位目录区域
+        
         outline_match = re.search(r'(?:目录|提纲|章节安排|结构安排|Table of Contents|Outline)[:：]?\s*([\s\S]*)', main_body, re.MULTILINE | re.IGNORECASE)
         source_for_outline = outline_match.group(1) if outline_match else main_body
-        
         outline_lines = []
         raw_lines = source_for_outline.split('\n')
-        # 定义大纲行的正则匹配规则
         outline_patterns = [
-            r'^Chapter\s+\d+',             # Chapter 1...
-            r'^Section\s+\d+',             # Section 1...
-            r'^Part\s+\d+',                # Part 1...
-            r'^第[一二三四五六七八九十0-9]+章', # 第一章...
-            r'^\d+(\.\d+)*\s',             # 1.1 ... (注意末尾要有空格，避免匹配年份)
-            r'^\d+\.\s',                   # 1. ...
-            r'^[一二三四五六]+、',           # 一、...
-            # 英文特定关键词
+            r'^Chapter\s+\d+', r'^Section\s+\d+', r'^Part\s+\d+', 
+            r'^第[一二三四五六七八九十0-9]+章', r'^\d+(\.\d+)*\s', r'^\d+\.\s', 
+            r'^[一二三四五六]+、', 
             r'^(?:Abstract|Introduction|Literature Review|Methodology|Results|Discussion|Conclusion|References|Appendix)',
-            # 中文特定关键词
             r'^(?:摘要|绪论|结论|参考文献|致谢|附录)'
         ]
         combined_pattern = '|'.join(outline_patterns)
         for line in raw_lines:
             line = line.strip()
-            # 排除过长的段落，只保留看起来像标题的行
-            if len(line) < 100 and re.match(combined_pattern, line, re.IGNORECASE):
+            if len(line) < 100 and re.match(combined_pattern, line, re.IGNORECASE): 
                 outline_lines.append(line)
-        if outline_lines:
-            data["outline_content"] = "\n".join(outline_lines)
+        if outline_lines: data["outline_content"] = "\n".join(outline_lines)
         return data

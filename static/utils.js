@@ -459,7 +459,7 @@ window.renderConfigArea = function() {
 
                         <div class="input-group input-group-sm" style="width: 75px;">
                             <input type="number" class="form-control text-center px-1" 
-                                   value="${child.words}" step="50" min="0" 
+                                   value="${child.words}" step="1" min="0" 
                                    onchange="updateLeaf(${gIdx}, ${cIdx}, 'words', this.value)">
                         </div>
 

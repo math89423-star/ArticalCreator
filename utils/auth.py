@@ -9,19 +9,46 @@ VALID_KEYS = set()
 
 def load_keys():
     global VALID_KEYS
+    # 如果文件不存在，清空集合
     if not os.path.exists(config.KEYS_FILE):
-        VALID_KEYS = set()
+        VALID_KEYS.clear()
         return
+
     try:
         with open(config.KEYS_FILE, 'r', encoding='utf-8') as f:
             keys = json.load(f)
-            VALID_KEYS = set(keys)
+            # 【核心修复】不要使用 = 赋值，而是更新集合内容，保持内存地址不变
+            VALID_KEYS.clear()
+            VALID_KEYS.update(keys)
     except:
-        VALID_KEYS = set()
+        VALID_KEYS.clear()
 
 def save_keys():
     with open(config.KEYS_FILE, 'w', encoding='utf-8') as f:
         json.dump(list(VALID_KEYS), f)
+
+# --- 新增：封装好的操作函数，供 routes.py 调用 ---
+
+def get_all_keys():
+    """获取所有 Key 列表"""
+    if not VALID_KEYS:
+        load_keys()
+    return list(VALID_KEYS)
+
+def add_key(key):
+    """添加 Key"""
+    if not VALID_KEYS:
+        load_keys()
+    VALID_KEYS.add(key)
+    save_keys()
+
+def remove_key(key):
+    """删除 Key"""
+    if not VALID_KEYS:
+        load_keys()
+    if key in VALID_KEYS:
+        VALID_KEYS.remove(key)
+        save_keys()
 
 def is_valid_key(key):
     # 确保最新

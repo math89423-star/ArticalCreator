@@ -610,22 +610,44 @@ def get_academic_thesis_prompt_cn(
     # 策略F: Python 绘图 
     visuals_instruction = ""
     plot_config = """
-    **Python代码要求**:
-        - 必须包含完整导入: `import matplotlib.pyplot as plt`, `import seaborn as sns`, `import pandas as pd`, `import numpy as np`。
-        - **中文支持(CRITICAL)**: 必须包含 `plt.rcParams['font.sans-serif'] = ['SimHei']` 和 `plt.rcParams['axes.unicode_minus'] = False`。
-        - **Seaborn规范(CRITICAL)**: 在使用 `sns.barplot` 或其他带 `palette` 参数的绘图函数时，**必须**将 `x` 轴变量赋值给 `hue` 参数，并设置 `legend=False`。
-          - 错误示例: `sns.barplot(x='Year', y='Value', palette='viridis')`
-          - 正确示例: `sns.barplot(x='Year', y='Value', hue='Year', palette='viridis', legend=False)`
-        - **画布设置(CRITICAL)**: **必须使用 `fig, ax = plt.subplots(figsize=(10, 6))` 创建画布**。严禁直接使用 `plt.figure`，也严禁不定义 ax 直接绘图。
-        - **绘图逻辑**: 所有绘图函数**必须**指定 `ax=ax` (例如 `sns.lineplot(..., ax=ax)`)。标题和标签设置必须使用 `ax.set_title()`, `ax.set_xlabel()` 等基于ax的方法，**严禁**使用 `plt.title()`。
-        - **数据定义**: 数据必须在代码内完整定义(DataFrame)，严禁读取外部文件。
-        - **风格**: 使用 `sns.set_theme(style="whitegrid", font='SimHei')`。
-        - **输出**: 代码最后**严禁**包含 `plt.show()`。
-        - **图名**: 代码块下方必须输出 `**图{chapter_num}.X 图名**`。
-        - **静默输出 (CRITICAL)**: 
-            1. **严禁**在代码块外部输出任何步骤标题！
-            2. **绝对禁止**出现以下文字：“设置绘图风格”、“定义数据”、“创建画布”、“绘制图形”、“添加标签”。
-            3. 你的输出格式必须是：[正文上一段] -> [Python代码块] -> [正文下一段]。
+    **Python绘图代码终极规范 (Strict Code Rules)**:
+    为了防止 'name ax is not defined' 和数据解析错误，你必须**严格照抄**以下模板逻辑：
+
+    1. **必须显式定义 ax**: 必须使用 `fig, ax = plt.subplots(...)`。**严禁**使用 `plt.figure()`。
+    2. **必须使用 DataFrame**: 数据必须先封装进字典，然后转为 `df = pd.DataFrame(data)`。
+    3. **必须传递 data 和 ax**: 所有 seaborn 绘图函数必须包含 `data=df` 和 `ax=ax` 参数。
+    4. **严禁 plt.show()**: 这是一个非交互环境，禁止调用 `plt.show()`。
+
+    **标准代码模板 (请直接复制并修改数据)**:
+    ```python
+    import matplotlib.pyplot as plt
+    import seaborn as sns
+    import pandas as pd
+    import numpy as np
+
+    # 1. 设置中文字体 (必须保留)
+    sns.set_theme(style="whitegrid", font='SimHei')
+    plt.rcParams['axes.unicode_minus'] = False
+
+    # 2. 准备数据 (必须构建 DataFrame，禁止直接传列表)
+    data = {
+        'Category': ['A', 'B', 'C', 'D'],
+        'Value': [15, 30, 45, 10]
+    }
+    df = pd.DataFrame(data)
+
+    # 3. 创建画布 (核心步骤，缺少此步会报错 ax not defined)
+    fig, ax = plt.subplots(figsize=(8, 5))
+
+    # 4. 绘图 (关键：data=df, ax=ax 缺一不可)
+    # hue=x轴变量是为了消除警告，legend=False 隐藏图例
+    sns.barplot(data=df, x='Category', y='Value', hue='Category', palette='viridis', legend=False, ax=ax)
+
+    # 5. 设置标题和标签 (必须使用 ax.set_xxx)
+    ax.set_title("示例标题")
+    ax.set_xlabel("类别")
+    ax.set_ylabel("数值")
+    ```
     """
     # 基础配置：Markdown 表格设置 (用于 Table 模式)
     table_config = """
@@ -807,24 +829,47 @@ def get_rewrite_prompt(thesis_title: str, section_title: str, user_instruction: 
         visuals_section = f"""
 6. **可视化响应（Visualization Strategy - ACTIVATED）**：
     - **执行动作**：用户指令中包含绘图要求。请根据本节论述的数据，编写 Python 代码绘制最合适的统计图，或者绘制三线表。
-    (1)**Python代码要求**:
-        1.必须包含完整导入: `import matplotlib.pyplot as plt`, `import seaborn as sns`, `import pandas as pd`, `import numpy as np`。
-        2.**中文支持(CRITICAL)**: 必须包含 `plt.rcParams['font.sans-serif'] = ['SimHei']` 和 `plt.rcParams['axes.unicode_minus'] = False`。
-        3.**Seaborn规范(CRITICAL)**: 在使用 `sns.barplot` 或其他带 `palette` 参数的绘图函数时，**必须**将 `x` 轴变量赋值给 `hue` 参数，并设置 `legend=False`。
-        4.**画布设置(CRITICAL)**: **必须使用 `fig, ax = plt.subplots(figsize=(10, 6))` 创建画布**。严禁直接使用 `plt.figure`。
-        5.**绘图逻辑**: 所有绘图函数**必须**指定 `ax=ax` (例如 `sns.lineplot(..., ax=ax)`)。标题和标签设置必须使用 `ax.set_title()`, `ax.set_xlabel()` 等基于ax的方法，**严禁**使用 `plt.title()`。
-        6.**数据定义**: 数据必须在代码内完整定义(DataFrame)，严禁读取外部文件。
-        7.**风格**: 使用 `sns.set_theme(style="whitegrid", font='SimHei')`。
-        8.**输出**: 代码最后**严禁**包含 `plt.show()`。
-        9.**图名**: 代码块下方必须输出 `**图{chapter_num}.X 图名**`。
+    
+    **(1) Python绘图代码终极规范 (Strict Code Rules)**:
+    为了防止 'name ax is not defined' 错误，你必须**严格照抄**以下模板：
+    
+    ```python
+    import matplotlib.pyplot as plt
+    import seaborn as sns
+    import pandas as pd
+    import numpy as np
+
+    # 1. 设置风格与字体
+    sns.set_theme(style="whitegrid", font='SimHei')
+    plt.rcParams['axes.unicode_minus'] = False
+    
+    # 2. 准备数据 (必须封装为 DataFrame)
+    data = {{
+        'X_Label': ['A', 'B', 'C'],
+        'Y_Label': [10, 20, 15]
+    }}
+    df = pd.DataFrame(data)
+
+    # 3. 创建画布 (必须使用 subplots)
+    fig, ax = plt.subplots(figsize=(10, 6))
+
+    # 4. 绘图 (必须显式传递 ax=ax 和 data=df)
+    sns.barplot(data=df, x='X_Label', y='Y_Label', hue='X_Label', palette='viridis', legend=False, ax=ax)
+
+    # 5. 设置标签 (使用 ax 方法)
+    ax.set_title("图表标题")
+    ax.set_xlabel("X轴名称")
+    ax.set_ylabel("Y轴名称")
+    ```
+    **避坑指南**:
+    1. 必须写 `fig, ax = plt.subplots(...)`，否则 `ax` 变量不存在。
+    2. 必须写 `data=df`，否则 seaborn 无法识别字符串列名。
+    3. **严禁**写 `plt.show()`。
+
        (2)**表格要求**:
         1.必须使用标准 Markdown 三线表格式。
         2.数据必须精确，表头清晰。
         3.**表名**: 表格上方必须输出 `**表{chapter_num}.X 表名**`。
-    - **静默输出 (CRITICAL)**: 
-            1. **严禁**在代码块外部输出任何步骤标题！
-            2. **绝对禁止**出现以下文字：“设置绘图风格”、“定义数据”、“创建画布”、“绘制图形”、“添加标签”。
-            3. 你的输出格式必须是：[正文上一段] -> [Python代码块] -> [正文下一段]。
 """
     
     # 如果前文很少（说明是开头部分），指令要强调“开篇”
